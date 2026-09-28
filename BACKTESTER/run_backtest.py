@@ -149,7 +149,9 @@ def run_interactive_wizard(scanner: DataScanner) -> Tuple[BacktestConfig, str]:
 
         # 2. Historical Date Range
         p_sym = preset_cfg.get("symbol", "BTCUSDC")
-        p_tf = preset_cfg.get("timeframe", "15m")
+        _p_raw_tf = str(preset_cfg.get("timeframe", "15m")).strip().lower()
+        _tf_lut = {"min1": "1m", "min3": "3m", "min5": "5m", "min15": "15m", "min30": "30m", "min60": "1h", "hour1": "1h", "hour2": "2h", "hour4": "4h", "hour6": "6h", "hour8": "8h", "hour12": "12h", "day1": "1d", "d1": "1d"}
+        p_tf = _tf_lut.get(_p_raw_tf, _p_raw_tf)
         sym_cat = catalog.get(p_sym)
         start_val = "2026-01-01"
         end_val = "2026-08-31"

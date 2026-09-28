@@ -27,6 +27,15 @@ on:
           - "8h"
           - "12h"
           - "1d"
+          - "Min1"
+          - "Min3"
+          - "Min5"
+          - "Min15"
+          - "Min30"
+          - "Min60"
+          - "Hour1"
+          - "Hour4"
+          - "Day1"
 
       strategy:
         description: "Strategy"

@@ -259,9 +259,18 @@ class GitHubBacktestRunner:
             "volume_multiplier": float(config.volume_multiplier) if config.volume_multiplier is not None else None
         }
 
+        # Clean timeframe for GitHub Actions choice options (e.g. "Min15" -> "15m")
+        raw_tf = str(config.timeframe or "15m").strip().lower()
+        tf_map = {
+            "min1": "1m", "min3": "3m", "min5": "5m", "min15": "15m", "min30": "30m",
+            "min60": "1h", "hour1": "1h", "hour2": "2h", "hour4": "4h", "hour6": "6h",
+            "hour8": "8h", "hour12": "12h", "day1": "1d", "d1": "1d"
+        }
+        clean_tf = tf_map.get(raw_tf, raw_tf)
+
         return {
             "symbol": sym,
-            "timeframe": config.timeframe,
+            "timeframe": clean_tf,
             "strategy": strat,
             "ema_preset": config.ema_preset or "5/13",
             "stoch_preset": config.stoch_preset or "FAST_SCALP",

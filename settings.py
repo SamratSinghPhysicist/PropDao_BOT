@@ -94,8 +94,10 @@ VOLUME_MODE = os.getenv("KCEX_VOLUME_MODE", os.getenv("VOLUME_MODE", "MARGIN_PCT
 # Dynamic Position Sizing (% of available wallet balance committed as margin):
 MARGIN_PCT = float(os.getenv("KCEX_MARGIN_PCT", os.getenv("MARGIN_PCT", "10.0")))
 
-# Strategy timeframe: "Min15" (15-minute), "Min1" (1-minute), "Min5", etc.
-TIMEFRAME = os.getenv("KCEX_TIMEFRAME", os.getenv("TIMEFRAME", "Min15"))
+# Strategy timeframe: "15m" (15-minute), "1m" (1-minute), "5m", etc.
+_raw_tf = os.getenv("PROPDAO_TIMEFRAME", os.getenv("KCEX_TIMEFRAME", os.getenv("TIMEFRAME", "15m")))
+_tf_map = {"min1": "1m", "min3": "3m", "min5": "5m", "min15": "15m", "min30": "30m", "min60": "1h", "hour1": "1h", "hour4": "4h", "day1": "1d"}
+TIMEFRAME = _tf_map.get(_raw_tf.strip().lower(), _raw_tf)
 
 # Default volume sizing: 1.0x min for TRUMP_USDT
 VOLUME_MULTIPLIER = float(os.getenv("KCEX_VOLUME_MULTIPLIER", os.getenv("VOLUME_MULTIPLIER", "1.0")))
