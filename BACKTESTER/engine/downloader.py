@@ -216,8 +216,8 @@ def main():
     parser.add_argument("--timeframe", type=str, default="1m", help="Candle timeframe")
     parser.add_argument("--start", type=str, default="2026-01-01", help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, default="2026-08-31", help="End date (YYYY-MM-DD)")
-    parser.add_argument("--ticks", dest="use_ticks", action="store_true", default=True, help="Download tick trades")
-    parser.add_argument("--no-ticks", dest="use_ticks", action="store_false", help="Skip downloading tick trades")
+    parser.add_argument("--ticks", dest="use_ticks", action="store_true", default=False, help="Download tick trades (WARNING: ~5-10 GB per month per symbol)")
+    parser.add_argument("--no-ticks", dest="use_ticks", action="store_false", help="Skip downloading tick trades (default: OHLCV only)")
     parser.add_argument("--base-dir", type=str, default="BACKTESTER", help="Base BACKTESTER directory")
 
     args = parser.parse_args()

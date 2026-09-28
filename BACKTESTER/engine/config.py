@@ -58,7 +58,7 @@ class BacktestConfig(ExecutionConfig):
     reports_dir: str = os.path.join(BACKTESTER_DIR, "reports")
 
     # High-fidelity Simulation Options
-    use_tick_data: bool = True               # Stream tick-by-tick trades when available for active trades
+    use_tick_data: bool = False              # Stream tick-by-tick trades when available for active trades (default: OHLCV-only to avoid ~40GB downloads)
     tick_fallback_to_candle: bool = True     # Use candle high/low if tick trade file is missing for a slice
     slippage_ticks: int = 0                  # Additional adverse fill slippage in ticks
     fee_mode: str = "LIVE"                   # "LIVE", "ZERO", or "MANUAL"

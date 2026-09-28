@@ -796,10 +796,10 @@ def run_interactive_wizard(scanner: DataScanner) -> Tuple[BacktestConfig, str]:
 
     # 13. Simulation Data Fidelity
     print("\n13. Simulation Data Fidelity:")
-    print("   [1] High-Fidelity Ticker Trades (Millisecond tick-by-tick streaming) [Default / Most Realistic]")
-    print("   [2] OHLCV Only (Fast candle simulation with 1m sub-candle disambiguation & conservative SL)")
-    fid_choice = input("   Select Fidelity Mode [default: 1 (Ticker Trades)]: ").strip()
-    use_tick_data = False if fid_choice in ("2", "ohlcv", "no-ticks", "candles") else True
+    print("   [1] OHLCV Only (Fast candle simulation with 1m sub-candle disambiguation & conservative SL) [Default / PropDAO]")
+    print("   [2] High-Fidelity Ticker Trades (Millisecond tick-by-tick streaming) [WARNING: ~40GB download for 8 months]")
+    fid_choice = input("   Select Fidelity Mode [default: 1 (OHLCV Only)]: ").strip()
+    use_tick_data = fid_choice == "2"
 
     config = BacktestConfig(
         symbol=selected_symbol,
