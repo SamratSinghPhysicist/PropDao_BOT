@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KCEX Strategy Lab | Backtest Analytics & Comparison Studio</title>
+  
+  <!-- Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  
+  <!-- TradingView Lightweight Charts (Local High-Performance Bundle) -->
+  <script src="/static/lightweight-charts.standalone.production.js"></script>
+  
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="top-nav">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-title">
+        <h1>KCEX STRATEGY LAB</h1>
+        <p>High-Fidelity Backtest Analytics & Interactive Comparison Studio</p>
+      </div>
+    </div>
+
+    <div class="nav-stats" id="navGlobalStats">
+      <div class="stat-chip">
+        <span class="stat-chip-label">Indexed Reports</span>
+        <span class="stat-chip-val cyan" id="statRunCount">0</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-chip-label">Trades Simulated</span>
+        <span class="stat-chip-val mono" id="statTotalTrades">0</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-chip-label">Best Win Rate</span>
+        <span class="stat-chip-val profit" id="statBestWR">0.0%</span>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <button class="btn btn-secondary btn-sm" id="btnExportAllAI" title="Export complete analytics for AI analysis">
+        <span>🤖</span> Export All for AI
+      </button>
+      <button class="btn btn-secondary btn-sm" id="btnReindex" title="Re-scan reports directory">
+        <span>🔄</span> Re-Index
+      </button>
+      <button class="btn btn-primary btn-sm" id="btnLaunchCompare" title="Compare selected runs">
+        <span>⚖️</span> Compare Runs
+      </button>
+    </div>
+
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="tabs-bar">
+    <button class="tab-btn active" data-tab="library">
+      <span>📚</span> Report Library
+      <span class="tab-badge" id="libraryBadge">0</span>
+    </button>
+    <button class="tab-btn" data-tab="forensics">
+      <span>📈</span> Forensics & Replay Lab
+      <span class="tab-badge pulse-badge" style="background: rgba(0, 210, 255, 0.2); color: var(--accent-cyan);">NEW</span>
+    </button>
+    <button class="tab-btn" data-tab="comparison">
+      <span>⚖️</span> Comparison Studio
+      <span class="tab-badge" id="compareBadge">0</span>
+    </button>
+    <button class="tab-btn" data-tab="deepdive">
+      <span>🔬</span> Deep Dive Inspector
+    </button>
+    <button class="tab-btn" data-tab="storage">
+      <span>💾</span> Disk & Resource Manager
+    </button>
+  </nav>
+
+  <!-- Main Content Body -->
+  <main class="main-content">
+
+    <!-- ====================================================================
+         TAB 1: REPORT LIBRARY
+         ==================================================================== -->
+    <section class="tab-pane active" id="pane-library">
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="librarySearch" placeholder="Search by symbol, strategy, timeframe, or tweak...">
+        </div>
+
+        <div class="filter-group" id="filterPairs">
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">PAIR:</span>
+          <button class="filter-chip active" data-filter="pair" data-val="ALL">All</button>
+        </div>
+
+        <div class="filter-group" id="filterStrategies">
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">STRATEGY:</span>
+          <button class="filter-chip active" data-filter="strat" data-val="ALL">All</button>
+        </div>
+      </div>
+
+      <!-- Runs Table -->
+      <div class="table-container">
+        <table class="runs-table" id="runsTable">
+          <thead>
+            <tr>
+              <th class="run-select-cell">
+                <input type="checkbox" id="selectAllRuns" title="Select All">
+              </th>
+              <th>Backtest Run & Parameters</th>
+              <th>Pair</th>
+              <th>Strategy</th>
+              <th>TF</th>
+              <th>Date Window</th>
+              <th>Leverage</th>
+              <th>Total Trades</th>
+              <th>Win Rate</th>
+              <th>Net PnL (USDT)</th>
+              <th>Net ROI</th>
+              <th>Profit Factor</th>
+              <th>Max DD</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="runsTableBody">
+            <!-- Dynamic Injection -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 2: FORENSICS & REPLAY LAB
+         ==================================================================== -->
+    <section class="tab-pane" id="pane-forensics">
+      <!-- Forensic Lab Top Control Bar -->
+      <div class="forensic-top-bar">
+        <div class="forensic-selectors">
+          <div class="control-item">
+            <label>BACKTEST RUN:</label>
+            <select class="select-dark" id="forensicRunSelect" style="min-width: 320px;"></select>
+          </div>
+          <div class="control-item">
+            <label>TRADE INSPECTED:</label>
+            <select class="select-dark" id="forensicTradeSelect" style="min-width: 320px;"></select>
+          </div>
+        </div>
+
+        <div class="forensic-tf-group">
+          <label>TIMEFRAME:</label>
+          <div class="tf-buttons">
+            <button class="tf-btn active" data-tf="1m">1m</button>
+            <button class="tf-btn" data-tf="3m">3m</button>
+            <button class="tf-btn" data-tf="5m">5m</button>
+            <button class="tf-btn" data-tf="15m">15m</button>
+            <button class="tf-btn" data-tf="30m">30m</button>
+            <button class="tf-btn" data-tf="1h">1h</button>
+            <button class="tf-btn" data-tf="4h">4h</button>
+            <button class="tf-btn" data-tf="1d">1d</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Trade Filter & Direct Jump Bar -->
+      <div class="forensic-sub-bar">
+        <div class="trade-filter-chips">
+          <button class="filter-chip active" data-trade-filter="ALL" id="chipAllTrades">All (<span id="countAllTrades">0</span>)</button>
+          <button class="filter-chip" data-trade-filter="WIN" id="chipWinTrades">Wins (<span id="countWinTrades">0</span>)</button>
+          <button class="filter-chip" data-trade-filter="LOSS" id="chipLossTrades">Losses (<span id="countLossTrades">0</span>)</button>
+          <button class="filter-chip" data-trade-filter="TIMEOUT" id="chipTimeoutTrades">Timeouts (<span id="countTimeoutTrades">0</span>)</button>
+          <button class="filter-chip" data-trade-filter="TICKS" id="chipTicksTrades" style="color: var(--accent-cyan); border-color: rgba(0, 210, 255, 0.4);">⚡ High-Res Ticks (<span id="countTicksTrades">0</span>)</button>
+        </div>
+
+        <div class="trade-nav-group">
+          <button class="btn btn-secondary btn-sm" id="btnPrevTrade" title="Previous Trade">◀ Prev</button>
+          <div class="jump-trade-box">
+            <input type="number" id="jumpTradeInput" class="jump-trade-input" placeholder="#ID" min="1">
+            <button class="btn btn-secondary btn-sm" id="btnJumpTrade">Go</button>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btnNextTrade" title="Next Trade">Next ▶</button>
+          <button class="btn btn-primary btn-sm" id="btnOpenAllTradesModal" title="Open Complete Trades Explorer Grid" style="margin-left: 0.5rem;">
+            <span>📋</span> All Trades Explorer
+          </button>
+          <label class="toggle-all-trades-label" title="Overlay all trade entry/exit markers on the chart">
+            <input type="checkbox" id="toggleShowAllTrades">
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Show All Trades on Chart</span>
+          </label>
+        </div>
+      </div>
+
+
+      <!-- Replay Engine Controller Toolbar -->
+      <div class="replay-toolbar">
+        <div class="replay-playback-controls">
+          <button class="btn btn-secondary btn-sm" id="btnReplayReset" title="Reset to Start / Cut Point"><span>⏮</span></button>
+          <button class="btn btn-secondary btn-sm" id="btnReplayStepBack" title="Step -1 Bar / Tick"><span>◀</span></button>
+          <button class="btn btn-primary btn-sm" id="btnReplayPlay" title="Play / Resume Replay"><span>▶</span> Play</button>
+          <button class="btn btn-warning btn-sm" id="btnReplayPause" style="display:none;" title="Pause Replay"><span>⏸</span> Pause</button>
+          <button class="btn btn-secondary btn-sm" id="btnReplayStepFwd" title="Step +1 Bar / Tick"><span>▶</span></button>
+          <span class="replay-divider"></span>
+          <button class="btn btn-accent btn-sm" id="btnChartReplay" title="Live Chart Replay: progressively reveals candles like a live chart">▶ Chart Replay</button>
+          <button class="btn btn-secondary btn-sm" id="btnReplayScissor" title="Click to cut chart at any candle and replay from that point"><span>✂️</span> Cut & Replay</button>
+        </div>
+
+        <!-- Scrub Slider Bar -->
+        <div class="replay-scrub-container">
+          <div class="scrub-labels">
+            <span>Replay Start / Cut</span>
+            <span id="replayElapsedSec" class="mono text-cyan">0.0s</span>
+            <span>Current / End</span>
+          </div>
+          <input type="range" class="replay-scrubber" id="replayScrubSlider" min="0" max="100" value="0">
+        </div>
+
+        <!-- Speed Selector Chips -->
+        <div class="replay-speed-group">
+          <span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">SPEED:</span>
+          <button class="speed-chip" data-speed="0.5">0.5x</button>
+          <button class="speed-chip active" data-speed="1">1x</button>
+          <button class="speed-chip" data-speed="2">2x</button>
+          <button class="speed-chip" data-speed="5">5x</button>
+          <button class="speed-chip" data-speed="10">10x</button>
+          <button class="speed-chip" data-speed="25">25x</button>
+          <button class="speed-chip" data-speed="50">50x</button>
+        </div>
+
+        <!-- Live Simulation Readout -->
+        <div class="replay-live-readout">
+          <span class="status-chip neutral" id="replayInPositionPill">STANDBY</span>
+          <div class="readout-metric">
+            <span class="readout-label">PRICE</span>
+            <span class="readout-val mono" id="replayCurrentPrice">--</span>
+          </div>
+          <div class="readout-metric">
+            <span class="readout-label">Δ ENTRY</span>
+            <span class="readout-val mono" id="replayCurrentDelta">--</span>
+          </div>
+          <div class="readout-metric">
+            <span class="readout-label">TO TP</span>
+            <span class="readout-val mono text-profit" id="replayToTp">--</span>
+          </div>
+          <div class="readout-metric">
+            <span class="readout-label">TO SL</span>
+            <span class="readout-val mono text-loss" id="replayToSl">--</span>
+          </div>
+          <div class="readout-metric" id="replayLastEventBox" style="min-width: 140px;">
+            <span class="readout-label">LAST EVENT</span>
+            <span class="readout-val mono" id="replayLastEventText" style="font-size: 0.72rem; color: var(--accent-cyan);">--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Forensic Lab Workspace: Dual-Pane Chart + Inspector Drawer -->
+      <div class="forensic-lab-viewport">
+        <!-- Left: Interactive TradingView Lightweight Charts Stack -->
+        <div class="forensic-chart-stack">
+          <div class="chart-container-card" style="position: relative;">
+            <div class="chart-pane-header">
+              <div class="pane-title">
+                <span>📊</span> Candlestick Market Path & Indicators (Wilder EMA 5/13 Overlay)
+              </div>
+              <div class="pane-legend">
+                <span class="legend-dot" style="background: #00f090;"></span> TP Target
+                <span class="legend-dot" style="background: #00d2ff;"></span> Entry
+                <span class="legend-dot" style="background: #ff3366;"></span> Stop Loss
+                <span class="legend-dot" style="background: #ffb800;"></span> Slow EMA
+              </div>
+            </div>
+            <div id="forensicMainChartContainer" class="forensic-chart-canvas" style="position: relative;">
+              <!-- TradingView-Style Indicator & OHLC Legend (Top-Left) -->
+              <div id="chartLegendOverlay" class="chart-legend-overlay">
+                <div class="legend-row-ohlc" id="legendOhlcRow">--</div>
+                <div class="legend-row-indicators" id="legendIndicatorsRow">--</div>
+              </div>
+
+              <!-- Chart Viewport Controls (Top-Right: Fit, Latest, Center Trade) -->
+              <div class="chart-viewport-controls" id="chartViewportControls">
+                <button type="button" class="btn-chart-nav" id="btnFitChart" title="Auto Fit Entire Evaluation Period (TradingView Fit)">⛶ Fit View</button>
+                <button type="button" class="btn-chart-nav" id="btnScrollToLatest" title="Jump to Latest / End Date (Default View)">⏩ Latest</button>
+                <button type="button" class="btn-chart-nav" id="btnCenterTrade" title="Center on Active Trade">📍 Center Trade</button>
+              </div>
+
+              <!-- Live Replay Trade Execution Alert Banner -->
+              <div id="replayExecutionBanner" class="replay-execution-banner" style="display: none;">
+                <span class="banner-icon" id="replayBannerIcon">🔔</span>
+                <span class="banner-text" id="replayBannerText">ORDER EXECUTED</span>
+              </div>
+
+              <!-- Live Replay Active Position HUD -->
+              <div id="replayPositionHUD" class="replay-position-hud" style="display: none;">
+                <div class="pos-hud-left">
+                  <span class="pos-badge" id="replayPosBadge">LONG #--</span>
+                  <span class="pos-info" id="replayPosInfo">Entry: -- | Mark: --</span>
+                </div>
+                <div class="pos-hud-right">
+                  <span class="pos-pnl" id="replayPosPnl">-- USDT</span>
+                  <span class="pos-roe" id="replayPosRoe">(--%)</span>
+                </div>
+              </div>
+
+              <!-- Replay Scissor Interactive Cut Preview Overlay -->
+              <div id="scissorOverlayContainer" class="scissor-overlay-container" style="display: none;">
+                <div id="scissorDottedLine" class="scissor-dotted-line"></div>
+                <div id="scissorBlurMask" class="scissor-blur-mask"></div>
+                <div id="scissorTooltip" class="scissor-tooltip">✂️ Click to cut & replay from here</div>
+              </div>
+
+              <!-- Backtest Switching Glassmorphic Blur Overlay -->
+              <div id="chartSwitchingOverlay" class="chart-switching-overlay" style="display: none;">
+                <div class="switching-spinner"></div>
+                <div class="switching-title" id="switchingTitle">Loading Strategy Backtest...</div>
+                <div class="switching-subtitle">Streaming OHLCV candlesticks & calculating indicators</div>
+              </div>
+            </div>
+            
+            <div class="chart-pane-header" style="border-top: 1px solid var(--border-subtle); margin-top: 0.5rem;">
+              <div class="pane-title">
+                <span>🌊</span> Stochastic RSI Momentum Oscillator (%K / %D with 20/80 Reversal Gates)
+              </div>
+              <div class="pane-legend">
+                <span class="legend-dot" style="background: #00d2ff;"></span> %K Fast
+                <span class="legend-dot" style="background: #ff3366;"></span> %D Slow
+              </div>
+            </div>
+            <div id="forensicOscChartContainer" class="forensic-osc-canvas"></div>
+
+            <div class="forensic-loading-overlay" id="forensicLoadingOverlay" style="display: none;">
+              <div class="spinner"></div>
+              <span>Streaming Millisecond Forensics & Tick Trade Timeline...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Forensic Microscope & Trade Inspector Drawer -->
+        <div class="forensic-inspector-drawer">
+          <!-- Trade Header & Badges -->
+          <div class="drawer-header">
+            <div>
+              <div style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">FORENSIC INSPECTOR</div>
+              <h3 id="inspTradeId" style="font-size: 1.2rem; font-weight: 800; color: var(--accent-cyan); display: inline-block;">#--</h3>
+              <div id="inspFeedBadge" class="data-feed-badge candle-res" style="margin-left: 0.5rem;">📊 1m Candle Fallback</div>
+            </div>
+            <div style="display: flex; gap: 0.4rem;">
+              <span class="status-chip" id="inspDirectionBadge">--</span>
+              <span class="status-chip" id="inspExitReasonBadge">--</span>
+            </div>
+          </div>
+
+          <!-- Execution Price Matrix -->
+          <div class="insp-price-matrix">
+            <div class="matrix-cell">
+              <span class="cell-label">ENTRY</span>
+              <span class="cell-val mono" id="inspEntryPrice">--</span>
+            </div>
+            <div class="matrix-cell">
+              <span class="cell-label">EXIT</span>
+              <span class="cell-val mono" id="inspExitPrice">--</span>
+            </div>
+            <div class="matrix-cell">
+              <span class="cell-label">TP TARGET</span>
+              <span class="cell-val mono text-profit" id="inspTpPrice">--</span>
+            </div>
+            <div class="matrix-cell">
+              <span class="cell-label">STOP LOSS</span>
+              <span class="cell-val mono text-loss" id="inspSlPrice">--</span>
+            </div>
+          </div>
+
+          <!-- Performance Scorecard -->
+          <div class="insp-scorecard">
+            <div class="sc-metric">
+              <span class="sc-label">Realized PnL:</span>
+              <span class="sc-val mono" id="inspPnl">--</span>
+            </div>
+            <div class="sc-metric">
+              <span class="sc-label">Return on Equity (ROE):</span>
+              <span class="sc-val mono" id="inspRoe">--</span>
+            </div>
+            <div class="sc-metric">
+              <span class="sc-label">In-Trade Duration:</span>
+              <span class="sc-val mono" id="inspDuration">--</span>
+            </div>
+            <div class="sc-metric">
+              <span class="sc-label">Fill Time (UTC):</span>
+              <span class="sc-val mono" id="inspOpenTime" style="font-size: 0.72rem;">--</span>
+            </div>
+            <div class="sc-metric">
+              <span class="sc-label">Close Time (UTC):</span>
+              <span class="sc-val mono" id="inspCloseTime" style="font-size: 0.72rem;">--</span>
+            </div>
+          </div>
+
+          <!-- High-Res Tick Forensics: MFE / MAE -->
+          <div class="insp-card">
+            <h4 class="insp-card-title"><span>🎯</span> Max Excursion (MFE / MAE Forensics)</h4>
+            <div class="mfe-mae-grid">
+              <div class="mfe-box">
+                <span class="mfe-label">Max Favorable (MFE)</span>
+                <span class="mfe-val profit mono" id="inspMfe">--</span>
+              </div>
+              <div class="mae-box">
+                <span class="mae-label">Max Drawdown (MAE)</span>
+                <span class="mae-val loss mono" id="inspMae">--</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Strategy State & Filter Verification -->
+          <div class="insp-card">
+            <h4 class="insp-card-title"><span>🛡️</span> Strategy Filters & Regime Gate Verification</h4>
+            <div class="filter-badge-list" id="inspFilterContainer">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+          <!-- "What Happened After Exit?" Mode -->
+          <div class="insp-card">
+            <h4 class="insp-card-title"><span>🔮</span> Post-Exit Path Forensics ("What Happened After Exit?")</h4>
+            <div class="post-exit-box" id="inspPostExitSummary">
+              Analyzing historical tick trajectory after trade exit...
+            </div>
+          </div>
+
+          <!-- Counterfactual "What-If" Exit Simulator -->
+          <div class="insp-card">
+            <h4 class="insp-card-title"><span>⚡</span> What-If Exit Simulator (Counterfactual Testing)</h4>
+            <div class="what-if-controls">
+              <div class="wi-form-group">
+                <label>ALTERNATIVE TIMEOUT:</label>
+                <select class="select-dark-sm" id="whatIfTimeoutSelect">
+                  <option value="NONE">No Timeout Exit</option>
+                  <option value="30">30 Seconds</option>
+                  <option value="45">45 Seconds</option>
+                  <option value="60">60 Seconds</option>
+                  <option value="75">75 Seconds</option>
+                  <option value="90">90 Seconds</option>
+                  <option value="120">120 Seconds</option>
+                </select>
+              </div>
+              <div class="wi-form-group">
+                <label>TP TARGET DISTANCE:</label>
+                <select class="select-dark-sm" id="whatIfTpSelect">
+                  <option value="DEFAULT">Default Strategy (+2 ticks)</option>
+                  <option value="1">+1 tick</option>
+                  <option value="2">+2 ticks</option>
+                  <option value="3">+3 ticks</option>
+                  <option value="4">+4 ticks</option>
+                  <option value="5">+5 ticks</option>
+                </select>
+              </div>
+              <button class="btn btn-primary btn-sm" id="btnRunWhatIf" style="width: 100%; margin-top: 0.4rem;">
+                <span>🔬</span> Simulate Counterfactual Exit
+              </button>
+            </div>
+            <div id="whatIfResultContainer" style="display: none; margin-top: 0.75rem;"></div>
+          </div>
+
+          <!-- Tick Event Timeline -->
+          <div class="insp-card">
+            <h4 class="insp-card-title"><span>⏱️</span> Millisecond Tick Event Timeline</h4>
+            <div class="timeline-scroll-box" id="inspTimelineContainer">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 3: INTERACTIVE COMPARISON STUDIO
+         ==================================================================== -->
+    <section class="tab-pane" id="pane-comparison">
+      <!-- Comparison Header & Run Chips -->
+      <div class="comparison-header-row">
+        <div>
+          <h2 style="font-size: 1.25rem; font-weight: 700;">Multi-Factor Strategy Comparison Studio</h2>
+          <p style="font-size: 0.8rem; color: var(--text-dim);">
+            Compare performance, risk curves, execution quality, and parameter tweaks side-by-side.
+          </p>
+        </div>
+
+        <div class="active-runs-chips" id="activeRunsChips">
+          <!-- Active run pills injected here -->
+        </div>
+
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button class="btn btn-secondary btn-sm" id="btnToggleFactorsDrawer">
+            <span>⚙️</span> Choose Factors to Compare
+          </button>
+          <button class="btn btn-primary btn-sm" id="btnExportCompareAI" title="Export comparison as an in-depth AI dossier">
+            <span>🤖</span> Export for AI
+          </button>
+          <button class="btn btn-secondary btn-sm" id="btnRefreshCompare">
+            <span>🔄</span> Refresh
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Collapsible Factors Selection Drawer -->
+      <div class="factors-drawer" id="factorsDrawer">
+        <div class="factors-drawer-header">
+          <div>
+            <h4 style="font-size: 0.92rem; font-weight: 700; color: var(--accent-cyan);">Select Comparison Factors</h4>
+            <p style="font-size: 0.75rem; color: var(--text-dim);">Check or uncheck factors to customize the comparison table and visual radar.</p>
+          </div>
+          <div style="display: flex; gap: 0.4rem;">
+            <button class="btn btn-secondary btn-sm" id="btnSelectAllFactors">Select All</button>
+            <button class="btn btn-secondary btn-sm" id="btnPresetReturnRisk">Risk & Return Only</button>
+            <button class="btn btn-secondary btn-sm" id="btnResetFactors">Default Factors</button>
+          </div>
+        </div>
+
+        <div class="factors-grid" id="factorsCheckboxesContainer">
+          <!-- Injected dynamically by category -->
+        </div>
+      </div>
+
+      <!-- Parameter Tweaks Diff Card (Highlights What Changed) -->
+      <div class="diff-card" id="parameterDiffCard">
+        <div class="diff-header">
+          <span style="font-size: 1.1rem;">🎛️</span>
+          <h3 style="font-size: 0.95rem; font-weight: 700;">Detected Tweaks & Parameter Variations</h3>
+          <span class="diff-badge" id="diffCountBadge">0 Differences</span>
+        </div>
+        <div class="diff-grid" id="diffGridContainer">
+          <!-- Injected dynamically -->
+        </div>
+      </div>
+
+      <!-- Side-by-Side Factor Comparison Matrix Table -->
+      <div class="matrix-container">
+        <table class="matrix-table" id="comparisonMatrixTable">
+          <thead>
+            <tr id="matrixHeaderRow">
+              <th style="width: 260px;">Comparison Factor</th>
+              <!-- Dynamic run columns -->
+            </tr>
+          </thead>
+          <tbody id="matrixBody">
+            <!-- Dynamic grouped rows with #1 Best badges -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Interactive Charts Studio -->
+      <div class="charts-grid-2">
+        <!-- Multi-Run Equity Overlay Chart -->
+        <div class="chart-box">
+          <div class="chart-header">
+            <div>
+              <h4 class="card-title"><span>📈</span> Normalized Return Curves (% ROI Overlay)</h4>
+              <p class="card-subtitle">Synchronized growth curves over time. Click legend to toggle runs.</p>
+            </div>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="chartEquityOverlay"></canvas>
+          </div>
+        </div>
+
+        <!-- Underwater Drawdown Comparison Chart -->
+        <div class="chart-box">
+          <div class="chart-header">
+            <div>
+              <h4 class="card-title"><span>🌊</span> Peak-to-Trough Drawdown Overlay</h4>
+              <p class="card-subtitle">Visualizes tail-risk and downside volatility side-by-side.</p>
+            </div>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="chartDrawdownOverlay"></canvas>
+          </div>
+        </div>
+
+        <!-- 6-Pillar Radar Footprint Chart -->
+        <div class="chart-box">
+          <div class="chart-header">
+            <div>
+              <h4 class="card-title"><span>🕸️</span> 6-Pillar Strategy Footprint (Radar)</h4>
+              <p class="card-subtitle">Balances Win Rate, Profit Factor, Drawdown Defense, Risk Alpha, Payoff, and Fees.</p>
+            </div>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="chartRadar"></canvas>
+          </div>
+        </div>
+
+        <!-- Exit Trigger Attribution Comparison -->
+        <div class="chart-box">
+          <div class="chart-header">
+            <div>
+              <h4 class="card-title"><span>🎯</span> Exit Reasons & Outcome Breakdown</h4>
+              <p class="card-subtitle">Comparing Take Profit Hit vs Stop Loss Hit rates.</p>
+            </div>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="chartExitBreakdown"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 3: DEEP DIVE SINGLE-RUN INSPECTOR
+         ==================================================================== -->
+    <section class="tab-pane" id="pane-deepdive">
+      <!-- Header with Run Selector -->
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span style="font-size: 1.25rem;">🔬</span>
+              <h2 style="font-size: 1.15rem; font-weight: 700;" id="ddTitle">Select a Run to Inspect</h2>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-dim);" id="ddSubtitle">Comprehensive institutional analytics</p>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+            <label style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">ACTIVE RUN:</label>
+            <select class="select-dark" id="ddRunSelector" style="min-width: 280px;"></select>
+            <button class="btn btn-primary btn-sm" id="btnExportDeepAI" title="Export this run as an AI analytical dossier">
+              <span>🤖</span> Export for AI
+            </button>
+            <button class="btn btn-primary btn-sm" id="btnOpenChronosSlicer" style="background: linear-gradient(135deg, #00d2ff, #7928ca); border: none; font-weight: 600;" title="Crop this backtest into smaller high-fidelity chunks for AI">
+              <span>✂️</span> AI Chunks Slicer
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Strategy, Hyperparameters & Filter Configuration Card -->
+      <div class="card" id="ddParametersCard" style="margin-bottom: 1.5rem; border-color: rgba(0, 210, 255, 0.25);">
+        <div class="card-header" style="border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.75rem;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 1.15rem;">🎛️</span>
+            <div>
+              <h3 class="card-title" style="font-size: 0.95rem; font-weight: 700; color: var(--text-bright);">Complete Strategy Calibration, Hyperparameters & Filter Rules</h3>
+              <p class="card-subtitle">Exact indicator parameters, risk management rules, and active protective filters used during this backtest run.</p>
+            </div>
+          </div>
+          <span class="diff-badge" style="background: rgba(0, 210, 255, 0.15); color: #00d2ff; border-color: rgba(0, 210, 255, 0.3);">100% Transparent Settings</span>
+        </div>
+        <div class="params-container" id="ddParametersContent" style="padding: 1.1rem 1.25rem;">
+          <!-- Injected dynamically by renderDeepDiveParametersCard -->
+        </div>
+      </div>
+
+      <!-- Executive Scorecard Metrics -->
+      <div class="scorecard-grid" id="ddScorecardGrid">
+        <!-- Injected dynamically -->
+      </div>
+
+      <!-- High-Res Interactive Equity & Drawdown Chart -->
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title"><span>📈</span> Cumulative Equity & Capital Growth</h3>
+            <p class="card-subtitle">Realized balance trajectory across the entire backtesting window.</p>
+          </div>
+        </div>
+        <div style="height: 360px; position: relative;">
+          <canvas id="chartSingleEquity"></canvas>
+        </div>
+      </div>
+
+      <!-- Distribution & Time Alpha Breakdown -->
+      <div class="charts-grid-2">
+        <!-- Holding Duration Distribution -->
+        <div class="chart-box">
+          <div class="chart-header">
+            <div>
+              <h4 class="card-title"><span>⏱️</span> Trade Holding Duration Distribution</h4>
+              <p class="card-subtitle">Volume and profitability across trade duration buckets.</p>
+            </div>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="chartDurationDistribution"></canvas>
+          </div>
+        </div>
+
+        <!-- Directional Long vs Short Alpha -->
+        <div class="chart-box">
+          <div class="chart-header">
+            <div>
+              <h4 class="card-title"><span>🧭</span> Directional Performance (LONG vs SHORT)</h4>
+              <p class="card-subtitle">Compares win rate and net return between long and short signals.</p>
+            </div>
+          </div>
+          <div class="chart-wrapper">
+            <canvas id="chartDirectional"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- 24-Hour UTC Hourly Heatmap -->
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title"><span>🌍</span> 24-Hour UTC Trading Heatmap</h3>
+            <p class="card-subtitle">Distribution of trade frequency, win rates, and PnL across market hours.</p>
+          </div>
+        </div>
+        <div class="heatmap-container" id="ddHourlyHeatmap">
+          <!-- Injected dynamically for hours 00 to 23 -->
+        </div>
+      </div>
+
+      <!-- Virtual Trade Journal Table -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title"><span>📜</span> Virtual Trade Journal (Low-RAM Paged Explorer)</h3>
+            <p class="card-subtitle" id="tradesSummarySubtitle">Displaying granular trade executions.</p>
+          </div>
+        </div>
+
+        <div class="trades-filter-bar">
+          <input type="text" class="search-input" id="tradesSearch" placeholder="Search by trade ID, price, or text..." style="max-width: 280px;">
+          <select class="select-dark" id="tradesDirectionFilter">
+            <option value="ALL">Direction: All</option>
+            <option value="LONG">LONG Only</option>
+            <option value="SHORT">SHORT Only</option>
+          </select>
+          <select class="select-dark" id="tradesExitFilter">
+            <option value="ALL">Exit Reason: All</option>
+            <option value="MIN_PROFIT_TP_HIT">TP Hits Only</option>
+            <option value="STOP_LOSS_HIT">SL Hits Only</option>
+          </select>
+        </div>
+
+        <div class="table-container">
+          <table class="runs-table" id="tradesTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Dir</th>
+                <th>Entry Price</th>
+                <th>Exit Price</th>
+                <th>PnL (USDT)</th>
+                <th>ROE %</th>
+                <th>Duration</th>
+                <th>Exit Reason</th>
+                <th>Close Time (UTC)</th>
+                <th>Balance After</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="tradesTableBody">
+              <!-- Injected dynamically -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pagination">
+          <button class="btn btn-secondary btn-sm" id="btnPrevPage">◀ Previous</button>
+          <span id="pageIndicator">Page 1 of 1</span>
+          <button class="btn btn-secondary btn-sm" id="btnNextPage">Next ▶</button>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 4: DISK & STORAGE MANAGER
+         ==================================================================== -->
+    <section class="tab-pane" id="pane-storage">
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title"><span>💾</span> Report Storage & RAM Footprint Manager</h3>
+            <p class="card-subtitle">Keep your backtester lightweight and prevent gigabytes of trade data from cluttering your disk.</p>
+          </div>
+        </div>
+
+        <div class="scorecard-grid" style="margin-top: 1rem;">
+          <div class="scorecard-metric">
+            <span class="scorecard-label">Total Reports Footprint</span>
+            <span class="scorecard-val mono" id="storageTotalMb">0.0 MB</span>
+          </div>
+          <div class="scorecard-metric">
+            <span class="scorecard-label">Heavy JSONL Files</span>
+            <span class="scorecard-val loss mono" id="storageJsonlMb">0.0 MB</span>
+            <span class="scorecard-sub" id="storageJsonlCount">0 files</span>
+          </div>
+          <div class="scorecard-metric">
+            <span class="scorecard-label">Trade CSV Files</span>
+            <span class="scorecard-val cyan mono" id="storageCsvMb">0.0 MB</span>
+            <span class="scorecard-sub" id="storageCsvCount">0 files</span>
+          </div>
+          <div class="scorecard-metric">
+            <span class="scorecard-label">Artifact ZIP Archives</span>
+            <span class="scorecard-val amber mono" id="storageZipMb">0.0 MB</span>
+            <span class="scorecard-sub" id="storageZipCount">0 files</span>
+          </div>
+        </div>
+
+        <div style="background: rgba(255, 42, 85, 0.08); border: 1px solid rgba(255, 42, 85, 0.3); border-radius: var(--radius-md); padding: 1.25rem; margin-top: 1.5rem;">
+          <h4 style="color: var(--loss-red); font-size: 0.95rem; font-weight: 700; margin-bottom: 0.35rem;">Clean Up Heavy Trade JSONL Files</h4>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 1rem;">
+            Trade JSONL files are 15-30MB each and contain redundant raw trade dumps. All full trade data is safely preserved in the companion CSV and ZIP archives, and all analytics are cached. Purging them frees up significant disk space with zero impact on analysis.
+          </p>
+          <button class="btn btn-danger btn-sm" id="btnPurgeJsonl">
+            <span>🗑️</span> Purge Heavy JSONL Files
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Floating Bottom Action Bar for Multi-Run Comparison -->
+  <div class="floating-compare-bar" id="floatingCompareBar">
+    <div class="selected-count-pill">
+      <span>⚖️</span> <span id="selectedCountText">0 runs selected</span>
+    </div>
+    <div style="display: flex; gap: 0.6rem;">
+      <button class="btn btn-secondary btn-sm" id="btnClearSelection">Clear</button>
+      <button class="btn btn-primary btn-sm" id="btnLaunchCompareFloating">Launch Comparison Studio ➔</button>
+    </div>
+  </div>
+
+  <!-- AI Export Modal -->
+  <div class="modal-backdrop" id="modalExportAI">
+    <div class="modal-content" style="max-width: 650px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 1.5rem;">🤖</span>
+          <div>
+            <h3 style="font-size: 1.1rem; font-weight: 700;" id="exportModalTitle">Export Quantitative AI Dossier</h3>
+            <p style="font-size: 0.75rem; color: var(--text-dim);" id="exportModalSubtitle">Structured for deep analysis by LLMs (Claude, ChatGPT, Gemini)</p>
+          </div>
+        </div>
+        <button class="chip-remove" id="btnCloseExportModal" style="font-size: 1.5rem;">&times;</button>
+      </div>
+
+      <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 1.25rem;">
+        <label style="font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 0.5rem;">
+          Select Export Format:
+        </label>
+        <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+          <label class="factor-label" style="padding: 0.6rem; background: var(--bg-card); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <input type="radio" name="exportFormat" value="markdown" checked>
+            <div>
+              <strong style="color: var(--text-main);">Markdown (.md) Dossier [Recommended for AI Chat]</strong>
+              <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.15rem;">Formatted tables, guided questions, and parameter matrices. Best for direct pasting or uploading to Claude, Gemini, ChatGPT.</div>
+            </div>
+          </label>
+          <label class="factor-label" style="padding: 0.6rem; background: var(--bg-card); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <input type="radio" name="exportFormat" value="json">
+            <div>
+              <strong style="color: var(--text-main);">Structured Machine JSON (.json) [For Code & Quantitative Models]</strong>
+              <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.15rem;">Exhaustive raw schema with downsampled equity curves, hourly distributions, and quantiles.</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
+        <button class="btn btn-secondary btn-sm" id="btnCopyExportAI">
+          <span>📋</span> Copy Dossier to Clipboard
+        </button>
+        <div style="display: flex; gap: 0.6rem;">
+          <button class="btn btn-secondary btn-sm" id="btnCancelExportModal">Cancel</button>
+          <button class="btn btn-primary btn-sm" id="btnDownloadExportAI">
+            <span>💾</span> Download File
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chronos Slicer & Granular AI Dossier Studio Modal -->
+  <div class="modal-backdrop" id="modalChronosSlicer">
+    <div class="modal-content" style="max-width: 920px; max-height: 90vh; display: flex; flex-direction: column;">
+      <!-- Header -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border-subtle);">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <div style="width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, rgba(0, 210, 255, 0.15), rgba(121, 40, 202, 0.3)); border: 1px solid rgba(0, 210, 255, 0.4); display: flex; align-items: center; justify-content: center; font-size: 1.4rem;">
+            ✂️
+          </div>
+          <div>
+            <h3 style="font-size: 1.15rem; font-weight: 700; background: linear-gradient(135deg, #00d2ff, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+              Chronos AI Slicer & Forensic Dossier Studio
+            </h3>
+            <p style="font-size: 0.78rem; color: var(--text-dim);">
+              Partition multi-month backtests into token-sized micro-chunks with tick traces, MFE/MAE, and loss autopsies for LLMs
+            </p>
+          </div>
+        </div>
+        <button class="chip-remove" id="btnCloseChronosModal" style="font-size: 1.5rem;">&times;</button>
+      </div>
+
+      <!-- Granularity Tabs -->
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+        <div class="trade-filter-chips" id="chronosGranularityChips">
+          <button class="filter-chip active" data-granularity="monthly">📅 Monthly Chunks</button>
+          <button class="filter-chip" data-granularity="weekly">📆 Weekly Chunks</button>
+          <button class="filter-chip" data-granularity="loss_clusters" style="color: var(--accent-red); border-color: rgba(255, 71, 87, 0.4);">⚡ Loss Clusters (Worst Streaks)</button>
+          <button class="filter-chip" data-granularity="daily">🗓️ Daily Chunks</button>
+        </div>
+        <div id="chronosActiveRunBadge" style="font-size: 0.75rem; font-family: var(--font-mono); color: var(--accent-cyan); background: rgba(0, 210, 255, 0.1); padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid rgba(0, 210, 255, 0.2);">
+          Loading run...
+        </div>
+      </div>
+
+      <!-- Main Slicer Body -->
+      <div style="display: grid; grid-template-columns: 1fr 340px; gap: 1rem; overflow: hidden; flex: 1; min-height: 380px;">
+        
+        <!-- Left Column: Chunks Explorer List -->
+        <div style="display: flex; flex-direction: column; overflow: hidden; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0.75rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border-subtle);">
+            <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">
+              Available Partitions (<span id="chronosTotalChunksCount">0</span>)
+            </span>
+            <span style="font-size: 0.72rem; color: var(--text-dim);">Select a chunk to export</span>
+          </div>
+
+          <div id="chronosChunksList" style="overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 0.5rem; padding-right: 0.3rem;">
+            <!-- Rendered Chunk Cards -->
+          </div>
+        </div>
+
+        <!-- Right Column: Slicing Configuration & Preview -->
+        <div style="display: flex; flex-direction: column; gap: 0.85rem; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0.85rem; overflow-y: auto;">
+          
+          <div>
+            <label style="font-size: 0.74rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 0.4rem;">
+              Selected Partition Details:
+            </label>
+            <div id="chronosSelectedCardPreview" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0.75rem;">
+              <div style="font-size: 0.85rem; font-weight: 700; color: var(--text-main); margin-bottom: 0.25rem;" id="chronosSelectedLabel">No chunk selected</div>
+              <div style="font-size: 0.74rem; color: var(--text-dim);" id="chronosSelectedDates">--</div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-top: 0.6rem; font-size: 0.75rem;">
+                <div>Trades: <strong id="chronosSelectedTrades">--</strong></div>
+                <div>Win Rate: <strong id="chronosSelectedWinRate">--</strong></div>
+                <div>PnL: <strong id="chronosSelectedPnL">--</strong></div>
+                <div>Losses: <strong id="chronosSelectedLosses" style="color: var(--accent-red);">--</strong></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Micro-Data Configuration -->
+          <div>
+            <label style="font-size: 0.74rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 0.4rem;">
+              Microstructure Data Options:
+            </label>
+            <div style="display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.78rem;">
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="checkbox" id="chkChronosTicks" checked>
+                <span>Include Millisecond Ticks & MFE/MAE</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="checkbox" id="chkChronosPostExit" checked>
+                <span>Include 120s Post-Exit Bounce Autopsy</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <input type="checkbox" id="chkChronosControlGroup" checked>
+                <span>Include Control Group (Winning Trades)</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Density & Format -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Max Losses:</label>
+              <select class="select-dark" id="selChronosMaxLosses" style="width: 100%; font-size: 0.78rem; padding: 0.35rem;">
+                <option value="10">10 Losses (Compact)</option>
+                <option value="25" selected>25 Losses (Standard)</option>
+                <option value="50">50 Losses (Deep)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Format:</label>
+              <select class="select-dark" id="selChronosFormat" style="width: 100%; font-size: 0.78rem; padding: 0.35rem;">
+                <option value="markdown" selected>Markdown (.md)</option>
+                <option value="json">JSON (.json)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- AI Model Prompt Guide Banner -->
+          <div style="background: rgba(0, 210, 255, 0.05); border: 1px solid rgba(0, 210, 255, 0.2); border-radius: var(--radius-sm); padding: 0.6rem; font-size: 0.72rem; color: var(--text-dim);">
+            <strong style="color: var(--accent-cyan); display: block; margin-bottom: 0.2rem;">💡 Tip for AI Chat:</strong>
+            Feed chunks sequentially to Gemini/Claude. The dossier includes automated failure fingerprints (<code>COUNTER_TREND_TRAP</code>, <code>TIMEOUT_DRIFT</code>) and questions to derive exact filter rules.
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Action Footer -->
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-subtle); flex-wrap: wrap;">
+        <button class="btn btn-secondary btn-sm" id="btnChronosCopyChunk">
+          <span>📋</span> Copy Chunk to Clipboard
+        </button>
+        <div style="display: flex; gap: 0.6rem;">
+          <button class="btn btn-secondary btn-sm" id="btnChronosDownloadChunk">
+            <span>💾</span> Download Chunk
+          </button>
+          <button class="btn btn-primary btn-sm" id="btnChronosBatchZip" style="background: linear-gradient(135deg, #00d2ff, #7928ca); border: none;">
+            <span>📦</span> Download All Chunks (ZIP)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- All Trades Explorer Modal -->
+  <div class="modal-backdrop" id="allTradesModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>📋</span> All Trades Explorer — Run: <span id="modalRunTitle" style="color: var(--accent-cyan); font-family: var(--font-mono);">--</span>
+        </div>
+        <button class="modal-close-btn" id="btnCloseAllTradesModal">&times;</button>
+      </div>
+
+      <div class="modal-toolbar">
+        <div class="search-box" style="flex: 1; max-width: 350px;">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="modalTradeSearch" placeholder="Search by ID, date, exit reason, PnL...">
+        </div>
+
+        <div class="trade-filter-chips">
+          <button class="filter-chip active" data-modal-filter="ALL" id="modalChipAll">All</button>
+          <button class="filter-chip" data-modal-filter="WIN" id="modalChipWins">Wins</button>
+          <button class="filter-chip" data-modal-filter="LOSS" id="modalChipLosses">Losses</button>
+          <button class="filter-chip" data-modal-filter="TIMEOUT" id="modalChipTimeouts">Timeouts</button>
+          <button class="filter-chip" data-modal-filter="TICKS" id="modalChipTicks" style="color: var(--accent-cyan); border-color: rgba(0, 210, 255, 0.4);">⚡ With Raw Ticks</button>
+        </div>
+      </div>
+
+      <div class="modal-table-container">
+        <table class="runs-table" id="allTradesTable">
+          <thead>
+            <tr>
+              <th>#ID</th>
+              <th>Open Time (UTC)</th>
+              <th>Direction</th>
+              <th>Duration</th>
+              <th>Exit Reason</th>
+              <th>Realized PnL</th>
+              <th>ROE %</th>
+              <th>Resolution Feed</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="allTradesTableBody">
+            <!-- Dynamic Injection -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="modal-footer">
+        <span id="modalTradesCount">Showing 0 trades</span>
+        <button class="btn btn-secondary btn-sm" id="btnCloseAllTradesFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Client Scripts -->
+  <script src="/static/forensics.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+

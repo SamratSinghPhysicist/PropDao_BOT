@@ -1,0 +1,287 @@
+name: PropDAO Strategy Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Trading Pair Symbol (e.g. BTC_USDT, ETH_USDT, SOL_USDT, TRUMP_USDT)"
+        required: true
+        default: "BTC_USDT"
+        type: string
+
+      timeframe:
+        description: "Candle Timeframe"
+        required: true
+        default: "15m"
+        type: choice
+        options:
+          - "1m"
+          - "3m"
+          - "5m"
+          - "15m"
+          - "30m"
+          - "1h"
+          - "2h"
+          - "4h"
+          - "6h"
+          - "8h"
+          - "12h"
+          - "1d"
+
+      strategy:
+        description: "Strategy"
+        required: true
+        default: "ORDER_BLOCK_DEMAND"
+        type: choice
+        options:
+          - "ORDER_BLOCK_DEMAND"
+          - "ML_1M_MODEL"
+          - "STOCH_RSI"
+          - "EMA_CROSSOVER"
+          - "SMART_STRATEGY"
+          - "TICK_CONSTRAINED_MM"
+
+      ema_preset:
+        description: "EMA Preset (if EMA_CROSSOVER)"
+        required: false
+        default: "5/13"
+        type: choice
+        options:
+          - "5/13"
+          - "9/21"
+          - "3/8"
+
+      stoch_preset:
+        description: "Stoch Preset (if STOCH_RSI)"
+        required: false
+        default: "FAST_SCALP"
+        type: choice
+        options:
+          - "FAST_SCALP"
+          - "STANDARD"
+          - "MICRO_BURST"
+
+      start_date:
+        description: "Start Date (YYYY-MM-DD)"
+        required: true
+        default: "2026-01-01"
+        type: string
+
+      end_date:
+        description: "End Date (YYYY-MM-DD)"
+        required: true
+        default: "2026-08-31"
+        type: string
+
+      use_ticks:
+        description: "Simulation Data Fidelity: true = Ticker Trades (ms tick stream); false = OHLCV only (1m sub-candle disambiguation & conservative SL)"
+        required: true
+        default: false
+        type: boolean
+
+      fee_mode:
+        description: "Fee Schedule Mode (MANUAL = PropDAO 0.015%/0.045%, ZERO = 0%, LIVE = Exchange API)"
+        required: true
+        default: "MANUAL"
+        type: choice
+        options:
+          - "MANUAL"
+          - "ZERO"
+          - "LIVE"
+
+      maker_fee:
+        description: "Custom Maker Fee % (PropDAO: 0.015)"
+        required: false
+        default: "0.015"
+        type: string
+
+      taker_fee:
+        description: "Custom Taker Fee % (PropDAO: 0.045)"
+        required: false
+        default: "0.045"
+        type: string
+
+      volume_mode:
+        description: "Trade Volume Mode (MARGIN_PCT, MULTIPLIER, CONTRACTS, MIN, FIXED_MARGIN)"
+        required: true
+        default: "MARGIN_PCT"
+        type: choice
+        options:
+          - "MARGIN_PCT"
+          - "MULTIPLIER"
+          - "CONTRACTS"
+          - "MIN"
+          - "FIXED_MARGIN"
+
+      volume_value:
+        description: "Volume Value (e.g. 10.0 for 10% margin, 2.0 for 2x min, or 5.0 for 5 USDT fixed margin)"
+        required: false
+        default: "10.0"
+        type: string
+
+      tp_ticks:
+        description: "Take Profit in ticks (pu away from entry / SMC fallback)"
+        required: true
+        default: "10"
+        type: string
+
+      sl_mode:
+        description: "Stop Loss Mode"
+        required: true
+        default: "TICKS"
+        type: choice
+        options:
+          - "TICKS"
+          - "ROE"
+          - "PRICE_PCT"
+
+      sl_ticks:
+        description: "Stop Loss distance in ticks (if TICKS mode)"
+        required: false
+        default: "5"
+        type: string
+
+      sl_roe:
+        description: "Stop Loss ROE % on Margin (if ROE mode)"
+        required: false
+        default: "25.0"
+        type: string
+
+      leverage:
+        description: "Leverage Multiplier (PropDAO max: 2.0x)"
+        required: true
+        default: "2"
+        type: string
+
+      capital:
+        description: "Initial Capital in USDT (PropDAO standard: 25000)"
+        required: true
+        default: "25000.0"
+        type: string
+
+      max_trades:
+        description: "Max Trades Limit (0 = entire period)"
+        required: false
+        default: "0"
+        type: string
+
+      quant_params_json:
+        description: "Quantitative Parameters JSON (inversion, ratchet, slippage, execution style)"
+        required: false
+        default: "{}"
+        type: string
+
+      sl_price:
+        description: "Stop Loss Price % (if PRICE_PCT mode)"
+        required: false
+        default: "0.5"
+        type: string
+
+      filters_json:
+        description: "Filters JSON Configuration (Duration, ADX, HTF 200 EMA, Hourly, Directional Bias)"
+        required: false
+        default: "{}"
+        type: string
+
+jobs:
+  run-backtest:
+    name: Backtest ${{ inputs.symbol }} (${{ inputs.strategy }} ${{ inputs.timeframe }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests websockets; fi
+
+      - name: Cache Historical Market Data
+        uses: actions/cache@v4
+        with:
+          path: |
+            BACKTESTER/OHLCV_Data_Binance
+            BACKTESTER/Historical_Trades_Data_Binance
+          key: market-data-${{ inputs.symbol }}-${{ inputs.timeframe }}-${{ inputs.start_date }}-${{ inputs.end_date }}-${{ inputs.use_ticks }}
+          restore-keys: |
+            market-data-${{ inputs.symbol }}-${{ inputs.timeframe }}-
+            market-data-${{ inputs.symbol }}-
+            market-data-
+
+      - name: Prepare Historical Market Data
+        run: |
+          TICKS_FLAG="--ticks"
+          if [ "${{ inputs.use_ticks }}" != "true" ]; then
+            TICKS_FLAG="--no-ticks"
+          fi
+          python BACKTESTER/engine/downloader.py \
+            --symbol "${{ inputs.symbol }}" \
+            --timeframe "${{ inputs.timeframe }}" \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
+            $TICKS_FLAG
+
+      - name: Execute Backtest
+        run: |
+          # Clean any stale report files so only this run's artifacts are produced
+          rm -f BACKTESTER/reports/*.csv BACKTESTER/reports/*.jsonl BACKTESTER/reports/*.md
+
+          TICKS_FLAG="--ticks"
+          if [ "${{ inputs.use_ticks }}" != "true" ]; then
+            TICKS_FLAG="--no-ticks"
+          fi
+
+          python BACKTESTER/run_backtest.py \
+            --symbol "${{ inputs.symbol }}" \
+            --timeframe "${{ inputs.timeframe }}" \
+            --strategy "${{ inputs.strategy }}" \
+            --ema-preset "${{ inputs.ema_preset }}" \
+            --stoch-preset "${{ inputs.stoch_preset }}" \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
+            $TICKS_FLAG \
+            --fee-mode "${{ inputs.fee_mode }}" \
+            --maker-fee "${{ inputs.maker_fee }}" \
+            --taker-fee "${{ inputs.taker_fee }}" \
+            --volume-mode "${{ inputs.volume_mode }}" \
+            --volume-value "${{ inputs.volume_value }}" \
+            --tp-ticks "${{ inputs.tp_ticks }}" \
+            --sl-mode "${{ inputs.sl_mode }}" \
+            --sl-ticks "${{ inputs.sl_ticks }}" \
+            --sl-roe "${{ inputs.sl_roe }}" \
+            --sl-price "${{ inputs.sl_price }}" \
+            --leverage "${{ inputs.leverage }}" \
+            --capital "${{ inputs.capital }}" \
+            --max-trades "${{ inputs.max_trades }}" \
+            --filters-json '${{ inputs.filters_json }}' \
+            --quant-params-json '${{ inputs.quant_params_json }}'
+
+      - name: Publish Summary to GitHub Job Summary
+        if: always()
+        run: |
+          SUMMARY_FILE=$(ls -t BACKTESTER/reports/*_summary.md 2>/dev/null | head -n 1)
+          if [ -f "$SUMMARY_FILE" ]; then
+            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## 📊 Backtest Results" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ No summary markdown report generated. The run may have encountered an execution failure or data error." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Generated Reports & Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: propdao-backtest-${{ inputs.symbol }}-${{ inputs.strategy }}-${{ inputs.timeframe }}-${{ inputs.leverage }}x-run${{ github.run_id }}
+          path: |
+            BACKTESTER/reports/*.csv
+            BACKTESTER/reports/*.jsonl
+            BACKTESTER/reports/*.md
+          if-no-files-found: warn
+          retention-days: 30

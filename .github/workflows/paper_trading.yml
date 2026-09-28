@@ -1,0 +1,37 @@
+name: PropDAO Paper Trading Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol"
+        required: true
+        default: "BTCUSDC"
+        type: string
+      timeframe:
+        description: "Timeframe"
+        required: true
+        default: "15m"
+        type: string
+
+jobs:
+  paper-test:
+    name: Run Paper Trading Bot
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Test Suite
+        run: |
+          pytest -v

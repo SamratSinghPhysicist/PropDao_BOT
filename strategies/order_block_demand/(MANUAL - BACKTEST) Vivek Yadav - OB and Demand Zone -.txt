@@ -1,0 +1,20 @@
+Vivek Yadav - OB and Demand Zone - Manual Backtests
+
+
+November 2024:
+Gross pnl = 2088.25
+Total Trades = 10 (Longs = 6 , Shorts = 4)
+Net Win Rate = 30% (3/10)
+Long Win Rate = 50% (3/6), Shorts Win Rate = 0% (0/4)
+
+December 2024:
+Gross pnl = -2051.02
+Total Trade = 13 (Longs = 8 , Shorts = 5 )
+Net Win Rate =  30.77% (4/13)
+Long Win Rate =  50%(4/8), Shorts Win Rate =  0% (0/5)
+
+January 2025:
+Gross pnl = -4115.91
+Total Trade = 26 (Longs = 14 , Shorts = 12 )
+Net Win Rate = 30.77% (8/26)
+Long Win Rate =  50% (7/14), Shorts Win Rate = 8.33% (1/12)
