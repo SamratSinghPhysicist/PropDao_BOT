@@ -201,16 +201,29 @@ jobs:
               generate_master_matrix_report(
                   all_matrix_results=all_matrix,
                   reports_dir=rep_dir,
-                  capital=25000.0,
-                  max_dd_limit_pct=2.0,
-                  start_date="2026-01-01",
-                  end_date="2026-08-31"
+                  capital=float("${{ inputs.capital }}"),
+                  max_dd_limit_pct=float("${{ inputs.max_dd_pct }}"),
+                  start_date="${{ inputs.start_date }}",
+                  end_date="${{ inputs.end_date }}"
               )
           EOF
 
-      - name: Publish Master Summary to Job Summary
+          # Run combined multi-asset portfolio simulation across all best configurations
+          echo "=== RUNNING COMBINED MULTI-ASSET PORTFOLIO BACKTEST ==="
+          python -u BACKTESTER/run_propdao_combined_portfolio.py \
+            --reports-dir "BACKTESTER/reports/propdao_matrix" \
+            --capital "${{ inputs.capital }}" \
+            --max-dd-pct "${{ inputs.max_dd_pct }}" \
+            --taker-fee "${{ inputs.taker_fee }}"
+
+      - name: Publish Master & Portfolio Summaries to Job Summary
         if: always()
         run: |
+          PORTFOLIO_MD="BACKTESTER/reports/propdao_matrix/propdao_combined_portfolio_report.md"
+          if [ -f "$PORTFOLIO_MD" ]; then
+            cat "$PORTFOLIO_MD" >> $GITHUB_STEP_SUMMARY
+            echo -e "\n---\n" >> $GITHUB_STEP_SUMMARY
+          fi
           MASTER_MD="BACKTESTER/reports/propdao_matrix/propdao_master_matrix_report.md"
           if [ -f "$MASTER_MD" ]; then
             cat "$MASTER_MD" >> $GITHUB_STEP_SUMMARY
