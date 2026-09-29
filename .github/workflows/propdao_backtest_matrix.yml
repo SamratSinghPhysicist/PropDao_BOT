@@ -1,0 +1,220 @@
+name: PropDAO Multi-Asset Matrix Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start Date (YYYY-MM-DD)"
+        required: true
+        default: "2026-01-01"
+        type: string
+
+      end_date:
+        description: "End Date (YYYY-MM-DD)"
+        required: true
+        default: "2026-08-31"
+        type: string
+
+      capital:
+        description: "Initial Capital in USDT (PropDAO standard: 25000)"
+        required: true
+        default: "25000.0"
+        type: string
+
+      maker_fee:
+        description: "Maker Fee % (PropDAO: 0.015)"
+        required: true
+        default: "0.015"
+        type: string
+
+      taker_fee:
+        description: "Taker Fee % (PropDAO: 0.045)"
+        required: true
+        default: "0.045"
+        type: string
+
+      max_dd_pct:
+        description: "Maximum Drawdown Floor % of Initial Capital (PropDAO: 2.0)"
+        required: true
+        default: "2.0"
+        type: string
+
+      timeframes:
+        description: "Comma-separated Timeframes"
+        required: true
+        default: "5m,15m,30m,1h,4h,1d"
+        type: string
+
+      leverages:
+        description: "Comma-separated Leverages"
+        required: true
+        default: "1,2"
+        type: string
+
+      risks:
+        description: "Comma-separated Risk % of Balance"
+        required: true
+        default: "1,2,5,10,15,20,25,50"
+        type: string
+
+      slippages:
+        description: "Comma-separated Slippage Ticks"
+        required: true
+        default: "0,1,2"
+        type: string
+
+jobs:
+  run-matrix:
+    name: ${{ matrix.symbol }} Matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol:
+          - "BTC_USDT"
+          - "ETH_USDT"
+          - "SOL_USDT"
+          - "DOGE_USDT"
+          - "TRUMP_USDT"
+          - "HYPE_USDT"
+          - "XAU_USDT"
+          - "XAG_USDT"
+          - "CL_USDT"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests websockets python-dotenv; fi
+
+      - name: Cache Historical Market Data
+        uses: actions/cache@v4
+        with:
+          path: BACKTESTER/OHLCV_Data_Binance
+          key: market-data-${{ matrix.symbol }}-${{ inputs.start_date }}-${{ inputs.end_date }}
+          restore-keys: |
+            market-data-${{ matrix.symbol }}-
+            market-data-
+
+      - name: Execute Matrix Backtest
+        run: |
+          mkdir -p BACKTESTER/reports/propdao_matrix
+          python -u BACKTESTER/run_propdao_matrix.py \
+            --symbol "${{ matrix.symbol }}" \
+            --timeframes "${{ inputs.timeframes }}" \
+            --leverages "${{ inputs.leverages }}" \
+            --risks "${{ inputs.risks }}" \
+            --slippages "${{ inputs.slippages }}" \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
+            --capital "${{ inputs.capital }}" \
+            --maker-fee "${{ inputs.maker_fee }}" \
+            --taker-fee "${{ inputs.taker_fee }}" \
+            --max-dd-pct "${{ inputs.max_dd_pct }}" \
+            --reports-dir "BACKTESTER/reports/propdao_matrix"
+
+      - name: Publish Summary to Job Summary
+        if: always()
+        run: |
+          SUMMARY_FILE=$(ls -t BACKTESTER/reports/propdao_matrix/propdao_summary_*.md 2>/dev/null | head -n 1)
+          if [ -f "$SUMMARY_FILE" ]; then
+            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ⚠️ No summary report found for ${{ matrix.symbol }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: propdao-matrix-${{ matrix.symbol }}
+          path: |
+            BACKTESTER/reports/propdao_matrix/*
+          retention-days: 30
+
+  consolidate-results:
+    name: Consolidate Master Matrix
+    needs: run-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download All Matrix Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts
+
+      - name: Consolidate All Reports & Master Matrix
+        run: |
+          mkdir -p BACKTESTER/reports/propdao_matrix
+          # Copy all downloaded CSVs and MDs into the reports directory
+          find downloaded_artifacts -name "propdao_matrix_*.csv" -exec cp {} BACKTESTER/reports/propdao_matrix/ \;
+          find downloaded_artifacts -name "propdao_trades_*.csv" -exec cp {} BACKTESTER/reports/propdao_matrix/ \;
+          find downloaded_artifacts -name "propdao_summary_*.md" -exec cp {} BACKTESTER/reports/propdao_matrix/ \;
+
+          # Run consolidation script
+          python - << 'EOF'
+          import os, glob, csv
+          from BACKTESTER.run_propdao_matrix import generate_master_matrix_report
+
+          rep_dir = "BACKTESTER/reports/propdao_matrix"
+          all_matrix = []
+          for csv_file in glob.glob(os.path.join(rep_dir, "propdao_matrix_*.csv")):
+              with open(csv_file, "r", encoding="utf-8") as f:
+                  reader = csv.DictReader(f)
+                  for r in reader:
+                      r["leverage"] = int(r["leverage"])
+                      r["risk_pct"] = float(r["risk_pct"])
+                      r["slippage_ticks"] = int(r.get("slippage_ticks", 0))
+                      r["total_trades"] = int(r["total_trades"])
+                      r["winning_trades"] = int(r["winning_trades"])
+                      r["losing_trades"] = int(r["losing_trades"])
+                      r["win_rate_pct"] = float(r["win_rate_pct"])
+                      r["net_pnl_usdt"] = float(r["net_pnl_usdt"])
+                      r["net_roi_pct"] = float(r["net_roi_pct"])
+                      r["max_drawdown_usdt"] = float(r["max_drawdown_usdt"])
+                      r["max_drawdown_pct"] = float(r["max_drawdown_pct"])
+                      r["profit_factor"] = float(r["profit_factor"])
+                      all_matrix.append(r)
+
+          if all_matrix:
+              generate_master_matrix_report(
+                  all_matrix_results=all_matrix,
+                  reports_dir=rep_dir,
+                  capital=25000.0,
+                  max_dd_limit_pct=2.0,
+                  start_date="2026-01-01",
+                  end_date="2026-08-31"
+              )
+          EOF
+
+      - name: Publish Master Summary to Job Summary
+        if: always()
+        run: |
+          MASTER_MD="BACKTESTER/reports/propdao_matrix/propdao_master_matrix_report.md"
+          if [ -f "$MASTER_MD" ]; then
+            cat "$MASTER_MD" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Complete Master Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: propdao-matrix-master-complete
+          path: BACKTESTER/reports/propdao_matrix/*
+          retention-days: 30

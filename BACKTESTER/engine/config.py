@@ -64,6 +64,8 @@ class BacktestConfig(ExecutionConfig):
     fee_mode: str = "LIVE"                   # "LIVE", "ZERO", or "MANUAL"
     maker_fee_override: Optional[float] = None
     taker_fee_override: Optional[float] = None
+    max_drawdown_limit_pct: Optional[float] = None  # PropDAO maximum drawdown limit (e.g. 2.0% of initial balance)
+    halt_on_breach: bool = False                     # Cease trading if drawdown reaches max_drawdown_limit_pct
 
     # Playback pacing
     # 0.0 = batch processing (as fast as CPU allows)

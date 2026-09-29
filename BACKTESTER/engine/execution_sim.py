@@ -118,6 +118,12 @@ class BacktestExecutionEngine:
         self._interrupted: bool = False
         self.sub_candles_1m: List[Candle] = []
         self._sub_1m_timestamps: List[int] = []
+        self.is_breached: bool = False
+        self.breach_trade_id: Optional[int] = None
+        self.breach_reason: Optional[str] = None
+        self.peak_balance_usdt: float = config.initial_balance_usdt
+        self.max_drawdown_usdt: float = 0.0
+        self.max_drawdown_pct: float = 0.0
 
         from strategies.filters import FilterPipeline
         self.filter_pipeline = FilterPipeline.from_config(self.config)
@@ -279,11 +285,8 @@ class BacktestExecutionEngine:
                     elif sub_hit_sl and not sub_hit_tp:
                         return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), sub_c.close_time_ms / 1000.0
                     elif sub_hit_tp and sub_hit_sl:
-                        # Discrepancy persists within this 1m sub-candle
-                        if sub_c.open >= exact_tp:
-                            return exact_tp, ExitReason.MIN_PROFIT_TP_HIT, sub_c.open_time_ms / 1000.0
-                        else:
-                            return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), sub_c.close_time_ms / 1000.0
+                        # User dispute rule: If still even in 1min the tp and sl are on same candle, declare sl
+                        return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), sub_c.close_time_ms / 1000.0
                 else: # SHORT
                     sub_hit_tp = (sub_c.low <= exact_tp)
                     sub_hit_sl = (sub_c.high >= exact_sl)
@@ -292,11 +295,8 @@ class BacktestExecutionEngine:
                     elif sub_hit_sl and not sub_hit_tp:
                         return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), sub_c.close_time_ms / 1000.0
                     elif sub_hit_tp and sub_hit_sl:
-                        # Discrepancy persists within this 1m sub-candle
-                        if sub_c.open <= exact_tp:
-                            return exact_tp, ExitReason.MIN_PROFIT_TP_HIT, sub_c.open_time_ms / 1000.0
-                        else:
-                            return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), sub_c.close_time_ms / 1000.0
+                        # User dispute rule: If still even in 1min the tp and sl are on same candle, declare sl
+                        return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), sub_c.close_time_ms / 1000.0
 
         # Step 3: If no sub-candles or timeframe is already 1m, declare Stop Loss Hit (conservative)
         return _calc_sl_price(exact_sl), _get_sl_exit_reason(exact_sl), c.close_time_ms / 1000.0
@@ -470,6 +470,27 @@ class BacktestExecutionEngine:
                             if self.config.playback_speed > 0:
                                 sim_delay = max(0.01, min(1.0, outcome.duration_seconds / self.config.playback_speed))
                                 time.sleep(sim_delay)
+
+                            # Drawdown & Breach tracking
+                            current_bal = self.wallet_balance_usdt
+                            self.peak_balance_usdt = max(self.peak_balance_usdt, current_bal)
+                            dd_usd = self.peak_balance_usdt - current_bal
+                            dd_pct = (dd_usd / self.peak_balance_usdt * 100.0) if self.peak_balance_usdt > 0 else 0.0
+                            self.max_drawdown_usdt = max(self.max_drawdown_usdt, dd_usd)
+                            self.max_drawdown_pct = max(self.max_drawdown_pct, dd_pct)
+
+                            # Prop firm Drawdown Breach Check (2% of initial capital)
+                            if getattr(self.config, "max_drawdown_limit_pct", None) is not None:
+                                max_dd_pct_limit = float(self.config.max_drawdown_limit_pct)
+                                max_allowed_loss = self.config.initial_balance_usdt * (max_dd_pct_limit / 100.0)
+                                loss_from_init = self.config.initial_balance_usdt - current_bal
+                                if loss_from_init >= max_allowed_loss or dd_usd >= max_allowed_loss:
+                                    self.is_breached = True
+                                    self.breach_trade_id = trade_id
+                                    self.breach_reason = f"Drawdown limit of {max_dd_pct_limit:.2f}% (${max_allowed_loss:.2f}) reached (Loss: ${loss_from_init:.2f}, Peak DD: ${dd_usd:.2f})"
+                                    if getattr(self.config, "halt_on_breach", False):
+                                        logger.warning("🚨 [PROPDAO BREACH] %s", self.breach_reason)
+                                        break
 
                             # Check max_trades limit
                             if self.config.max_trades > 0 and self.trade_counter >= self.config.max_trades:

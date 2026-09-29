@@ -9,5 +9,8 @@ htmlcov/
 .env
 data/
 reports/
+BACKTESTER/OHLCV_Data_Binance/
+BACKTESTER/Historical_Trades_Data_Binance/
+BACKTESTER/reports/
 .idea/
 .vscode/

@@ -22,6 +22,24 @@ from BACKTESTER.engine.data_loader import Candle, normalize_timeframe, timeframe
 
 # Preconfigured contract metadata for major pairs (fallback/default values matching exchange specs)
 DEFAULT_CONTRACTS: Dict[str, Dict[str, Any]] = {
+    "HYPE_USDT": {
+        "base_coin": "HYPE",
+        "quote_coin": "USDT",
+        "contract_size": 1.0,
+        "price_unit": 0.001,
+        "volume_unit": 1.0,
+        "price_precision": 3,
+        "volume_precision": 2,
+        "min_volume": 0.01,
+        "max_volume": 200000.0,
+        "min_leverage": 1,
+        "max_leverage": 50,
+        "maintenance_margin_ratio": 0.025,
+        "initial_margin_ratio": 0.05,
+        "maker_fee_rate": 0.0,
+        "taker_fee_rate": 0.0005,
+        "depth_steps": ["0.001"]
+    },
     "TRUMP_USDT": {
         "base_coin": "TRUMP",
         "quote_coin": "USDT",
