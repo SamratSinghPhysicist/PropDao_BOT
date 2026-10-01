@@ -137,7 +137,8 @@ class PropDAOMarket:
     ) -> List[Dict[str, Any]]:
         """
         Fetches historical OHLCV candlestick records.
-        Retrieves real-time candles from Binance/Hyperliquid with local caching to maintain 0-lag updates.
+        Prioritizes Hyperliquid (native to PropDAO, zero cloud geo-blocking),
+        falls back to Bybit and Binance with local caching to maintain 0-lag updates.
         Returns: list of dicts with {timestamp, open, high, low, close, volume}.
         """
         sym = symbol.upper()
@@ -150,18 +151,86 @@ class PropDAOMarket:
             if now - last_ts < self._kline_ttl_seconds:
                 return data
 
-        # Fetch from Binance public market data API (mirrors Hyperliquid reference crypto marks)
+        coin = sym.replace("USDC", "").replace("USDT", "").replace("-PERP", "").replace("_PERP", "")
+
+        # 1. Primary Source: Hyperliquid Official API (Native PropDAO liquidity layer, never blocks cloud IPs)
+        hl_intervals = {
+            "1m": 60000, "3m": 180000, "5m": 300000, "15m": 900000,
+            "30m": 1800000, "1h": 3600000, "4h": 14400000, "1d": 86400000
+        }
+        if norm_int in hl_intervals:
+            try:
+                step_ms = hl_intervals[norm_int]
+                now_ms = int(time.time() * 1000)
+                start_ms = now_ms - (limit * step_ms)
+                payload = json.dumps({
+                    "type": "candleSnapshot",
+                    "req": {"coin": coin, "interval": norm_int, "startTime": start_ms}
+                }).encode("utf-8")
+                req = urllib.request.Request(
+                    "https://api.hyperliquid.xyz/info",
+                    data=payload,
+                    headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+                )
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+                    if raw and isinstance(raw, list):
+                        candles: List[Dict[str, Any]] = []
+                        for r in raw:
+                            candles.append({
+                                "timestamp": int(r["t"]),
+                                "open": float(r["o"]),
+                                "high": float(r["h"]),
+                                "low": float(r["l"]),
+                                "close": float(r["c"]),
+                                "volume": float(r["v"]),
+                            })
+                        if candles:
+                            self._kline_cache[cache_key] = (now, candles)
+                            return candles
+            except Exception as e:
+                logger.debug("Hyperliquid kline fetch failed for %s: %s. Trying Bybit fallback...", coin, e)
+
+        # 2. Secondary Fallback: Bybit Public Linear API (global cloud friendly)
+        bybit_map = {
+            "1m": "1", "3m": "3", "5m": "5", "15m": "15",
+            "30m": "30", "1h": "60", "4h": "240", "1d": "D"
+        }
+        bb_int = bybit_map.get(norm_int, "60")
+        bb_pair = f"{coin}USDT"
+        try:
+            url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={bb_pair}&interval={bb_int}&limit={limit}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+                rows = raw.get("result", {}).get("list", [])
+                if rows:
+                    rows.reverse()
+                    candles = []
+                    for r in rows:
+                        candles.append({
+                            "timestamp": int(r[0]),
+                            "open": float(r[1]),
+                            "high": float(r[2]),
+                            "low": float(r[3]),
+                            "close": float(r[4]),
+                            "volume": float(r[5]),
+                        })
+                    if candles:
+                        self._kline_cache[cache_key] = (now, candles)
+                        return candles
+        except Exception as e:
+            logger.debug("Bybit kline fallback failed for %s: %s. Trying Binance...", bb_pair, e)
+
+        # 3. Tertiary Fallback: Binance Public Market Data API
         pair = sym.replace("USDC", "USDT")
         url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={norm_int}&limit={limit}"
-
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=8.0) as resp:
+            with urllib.request.urlopen(req, timeout=6.0) as resp:
                 raw = json.loads(resp.read().decode("utf-8"))
-                candles: List[Dict[str, Any]] = []
+                candles = []
                 for row in raw:
-                    # Binance kline structure:
-                    # [0: openTime, 1: open, 2: high, 3: low, 4: close, 5: volume, 6: closeTime...]
                     candles.append({
                         "timestamp": int(row[0]),
                         "open": float(row[1]),
@@ -170,13 +239,15 @@ class PropDAOMarket:
                         "close": float(row[4]),
                         "volume": float(row[5]),
                     })
-                self._kline_cache[cache_key] = (now, candles)
-                return candles
+                if candles:
+                    self._kline_cache[cache_key] = (now, candles)
+                    return candles
         except Exception as e:
-            logger.warning("Error fetching klines from primary source: %s. Trying fallback...", e)
-            if cache_key in self._kline_cache:
-                return self._kline_cache[cache_key][1]
-            return []
+            logger.warning("All primary/fallback kline feeds failed for %s (%s): %s", sym, norm_int, e)
+
+        if cache_key in self._kline_cache:
+            return self._kline_cache[cache_key][1]
+        return []
 
     def get_current_price(self, symbol: str) -> float:
         """Fetches latest mark/last price for symbol."""
