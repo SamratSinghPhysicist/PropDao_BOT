@@ -144,6 +144,13 @@ class Position:
     tp_price: Optional[float] = None    # Actual take-profit price
 
     @property
+    def margin(self) -> float:
+        """Alias for margin_allocated or calculated margin collateral."""
+        if hasattr(self, "margin_allocated") and self.margin_allocated > 0:
+            return self.margin_allocated
+        return (self.qty * self.entry) / (self.leverage or 1.0)
+
+    @property
     def liquidation_price(self) -> float:
         """Isolated margin liquidation price: 100 / leverage % adverse move."""
         if self.leverage <= 1.0:

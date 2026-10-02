@@ -285,7 +285,8 @@ class ExecutionEngine:
         if active_pos:
             is_long = active_pos.side == OrderSide.BUY
             unrealized_usd = (cur_price - active_pos.entry) * active_pos.qty if is_long else (active_pos.entry - cur_price) * active_pos.qty
-            margin_used = active_pos.margin if (active_pos.margin and active_pos.margin > 0) else (active_pos.qty * active_pos.entry / (active_pos.leverage or 1.0))
+            margin_val = getattr(active_pos, "margin", getattr(active_pos, "margin_allocated", None))
+            margin_used = float(margin_val) if (margin_val and margin_val > 0) else (active_pos.qty * active_pos.entry / (active_pos.leverage or 1.0))
             unrealized_pct = (unrealized_usd / margin_used) * 100 if margin_used > 0 else 0.0
             hold_sec = int(time.time() - self.tracker.entry_time) if self.tracker.entry_time > 0 else 0
             hold_str = f"{hold_sec // 60}m {hold_sec % 60}s"
@@ -483,10 +484,11 @@ class ExecutionEngine:
                     sl_price=sl_px,
                     smc_zone_id=zone_id
                 )
+                c_margin = getattr(created_pos, "margin", getattr(created_pos, "margin_allocated", 0.0))
                 logger.info(
                     "✅ [POSITION CONFIRMED] %s %.5f %s @ $%.4f (Margin: $%.2f, Lev: %.1fx, ID: %s)",
                     created_pos.side.value, created_pos.qty, self.symbol,
-                    created_pos.entry, created_pos.margin, created_pos.leverage, created_pos.id
+                    created_pos.entry, c_margin, created_pos.leverage, created_pos.id
                 )
             else:
                 logger.info("[ORDER SUBMITTED] Order sent, awaiting position synchronization in next tick...")
