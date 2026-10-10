@@ -60,6 +60,8 @@ CONTRACT_SPECS = {
     "XAU_USDT": {"cs": 0.001, "min_vol": 1},
     "XAG_USDT": {"cs": 0.01, "min_vol": 1},
     "CL_USDT": {"cs": 0.01, "min_vol": 1},
+    "SUI_USDT": {"cs": 1.0, "min_vol": 1},
+    "NEAR_USDT": {"cs": 1.0, "min_vol": 1},
 }
 
 
@@ -221,8 +223,9 @@ def simulate_portfolio_scenario(
             sym = row["canonical_symbol"]
             lev = row["best_leverage"]
             risk_pct = fixed_risk_pct if fixed_risk_pct is not None else (row["base_risk_pct"] * risk_scale)
-            cs = CONTRACT_SPECS[sym]["cs"]
-            min_vol = CONTRACT_SPECS[sym]["min_vol"]
+            spec = CONTRACT_SPECS.get(sym, {"cs": 1.0, "min_vol": 1})
+            cs = spec["cs"]
+            min_vol = spec["min_vol"]
 
             if sizing_mode == "FREE_BALANCE":
                 alloc_base = max(0.0, free_cash)
