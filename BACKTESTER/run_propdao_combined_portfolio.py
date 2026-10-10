@@ -64,28 +64,75 @@ CONTRACT_SPECS = {
 
 
 def load_candidate_trades(reports_dir: str) -> pd.DataFrame:
-    """Loads and standardizes candidate trades for all best configurations."""
+    """Loads and standardizes candidate trades for best configurations of all available symbols in reports_dir."""
     all_trades = []
-    for sym, cfg in BEST_CONFIGURATIONS.items():
-        clean_sym = sym.replace("_", "")
-        fn = os.path.join(reports_dir, f"propdao_trades_{clean_sym}.csv")
-        if not os.path.exists(fn):
-            raise FileNotFoundError(f"Missing trade log for {sym} at {fn}. Run individual backtest first.")
+    
+    # 1. Discover all propdao_matrix_*.csv files in reports_dir
+    import glob
+    matrix_files = glob.glob(os.path.join(reports_dir, "propdao_matrix_*.csv"))
+    
+    # Fallback to predefined if no matrix files found
+    if not matrix_files:
+        symbols_to_check = list(BEST_CONFIGURATIONS.keys())
+    else:
+        symbols_to_check = []
+        for mf in matrix_files:
+            clean = os.path.basename(mf).replace("propdao_matrix_", "").replace(".csv", "")
+            symbols_to_check.append(clean)
+
+    for sym_key in symbols_to_check:
+        clean_sym = sym_key.replace("_", "")
+        fn_trades = os.path.join(reports_dir, f"propdao_trades_{clean_sym}.csv")
+        fn_matrix = os.path.join(reports_dir, f"propdao_matrix_{clean_sym}.csv")
         
-        df = pd.read_csv(fn)
+        if not os.path.exists(fn_trades):
+            continue
+            
+        df = pd.read_csv(fn_trades)
+        if df.empty:
+            continue
+            
+        # Determine best configuration for this symbol
+        cfg = BEST_CONFIGURATIONS.get(sym_key) or BEST_CONFIGURATIONS.get(f"{clean_sym[:-4]}_{clean_sym[-4:]}" if clean_sym.endswith("USDT") else clean_sym)
+        if not cfg and os.path.exists(fn_matrix):
+            mdf = pd.read_csv(fn_matrix)
+            if not mdf.empty:
+                passed = mdf[mdf["prop_status"] == "PASSED"]
+                best_row = passed.sort_values(by="net_pnl_usdt", ascending=False).iloc[0] if not passed.empty else mdf.sort_values(by="net_pnl_usdt", ascending=False).iloc[0]
+                cfg = {
+                    "tf": str(best_row["timeframe"]),
+                    "slip": int(best_row.get("slippage_ticks", 0)),
+                    "lev": int(best_row["leverage"]),
+                    "risk": float(best_row["risk_pct"])
+                }
+                
+        if not cfg:
+            # Default to first configuration in trade logs
+            first = df.iloc[0]
+            cfg = {
+                "tf": str(first["timeframe"]),
+                "slip": int(first.get("slippage_ticks", 0)),
+                "lev": int(first["leverage"]),
+                "risk": float(first["risk_pct"])
+            }
+            
         sub = df[
-            (df["timeframe"] == cfg["tf"]) &
+            (df["timeframe"].astype(str) == str(cfg["tf"])) &
             (df["slippage_ticks"] == cfg["slip"]) &
             (df["leverage"] == cfg["lev"]) &
             (df["risk_pct"] == cfg["risk"])
         ].copy()
         
-        sub["canonical_symbol"] = sym
+        canonical = df["symbol"].iloc[0] if "symbol" in df.columns else sym_key
+        sub["canonical_symbol"] = canonical
         sub["best_timeframe"] = cfg["tf"]
         sub["best_leverage"] = cfg["lev"]
         sub["best_slippage"] = cfg["slip"]
         sub["base_risk_pct"] = cfg["risk"]
         all_trades.append(sub)
+
+    if not all_trades:
+        raise FileNotFoundError(f"No valid trade logs found in {reports_dir}.")
 
     combined = pd.concat(all_trades, ignore_index=True)
     combined["entry_dt"] = pd.to_datetime(combined["entry_time_utc"])

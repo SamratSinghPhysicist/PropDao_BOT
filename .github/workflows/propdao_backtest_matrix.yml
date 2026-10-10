@@ -3,6 +3,12 @@ name: PropDAO Multi-Asset Matrix Backtest
 on:
   workflow_dispatch:
     inputs:
+      symbols:
+        description: "Comma-separated Trading Pairs (e.g. SUI_USDT,NEAR_USDT)"
+        required: true
+        default: "SUI_USDT,NEAR_USDT"
+        type: string
+
       start_date:
         description: "Start Date (YYYY-MM-DD)"
         required: true
@@ -16,9 +22,9 @@ on:
         type: string
 
       capital:
-        description: "Initial Capital in USDT (PropDAO standard: 25000)"
+        description: "Initial Capital in USDT"
         required: true
-        default: "25000.0"
+        default: "1000.0"
         type: string
 
       maker_fee:
@@ -34,52 +40,56 @@ on:
         type: string
 
       max_dd_pct:
-        description: "Maximum Drawdown Floor % of Initial Capital (PropDAO: 2.0)"
+        description: "Maximum Drawdown Floor % of Initial Capital"
         required: true
-        default: "2.0"
+        default: "3.0"
         type: string
 
       timeframes:
         description: "Comma-separated Timeframes"
         required: true
-        default: "5m,15m,30m,1h,4h,1d"
+        default: "1m,3m,5m,15m,30m,1h,1d"
         type: string
 
       leverages:
         description: "Comma-separated Leverages"
         required: true
-        default: "1,2"
+        default: "2"
         type: string
 
       risks:
         description: "Comma-separated Risk % of Balance"
         required: true
-        default: "1,2,5,10,15,20,25,50"
+        default: "1,5,10,25,50,75"
         type: string
 
       slippages:
         description: "Comma-separated Slippage Ticks"
         required: true
-        default: "0,1,2"
+        default: "0"
         type: string
 
 jobs:
+  setup-matrix:
+    name: Setup Matrix Targets
+    runs-on: ubuntu-latest
+    outputs:
+      symbols: ${{ steps.set-symbols.outputs.symbols }}
+    steps:
+      - name: Parse Symbols to JSON Matrix
+        id: set-symbols
+        run: |
+          python3 -c "import json; s = '${{ inputs.symbols }}'; syms = [x.strip() for x in s.split(',') if x.strip()]; print('symbols=' + json.dumps(syms))" >> $GITHUB_OUTPUT
+
   run-matrix:
     name: ${{ matrix.symbol }} Matrix
+    needs: setup-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        symbol:
-          - "BTC_USDT"
-          - "ETH_USDT"
-          - "SOL_USDT"
-          - "DOGE_USDT"
-          - "TRUMP_USDT"
-          - "HYPE_USDT"
-          - "XAU_USDT"
-          - "XAG_USDT"
-          - "CL_USDT"
+        symbol: ${{ fromJson(needs.setup-matrix.outputs.symbols) }}
+
 
     steps:
       - name: Checkout Repository
