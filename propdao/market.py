@@ -32,9 +32,36 @@ class PropDAOMarket:
         self._markets_cache: Dict[str, Dict[str, Any]] = {}
         self._contracts_cache: Dict[str, ContractDetail] = {}
         self._last_markets_fetch: float = 0.0
+        self._live_prices_cache: Dict[str, Dict[str, Any]] = {}
+        self._last_live_prices_fetch: float = 0.0
+        self._live_prices_ttl: float = 2.0
         self._kline_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
         self._kline_ttl_seconds: float = 2.0
         self.refresh_markets()
+
+    def refresh_live_prices(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
+        """
+        Fetches live market prices and 24h metrics directly from PropDAO platform:
+        GET https://app.propdao.finance/api/markets
+        """
+        now = time.time()
+        if not force and (now - self._last_live_prices_fetch < self._live_prices_ttl) and self._live_prices_cache:
+            return self._live_prices_cache
+
+        url = "https://app.propdao.finance/api/markets"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "PropDAOBot/1.0"})
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                markets = data.get("markets", {})
+                if markets and isinstance(markets, dict):
+                    self._live_prices_cache = markets
+                    self._last_live_prices_fetch = now
+                    return self._live_prices_cache
+        except Exception as e:
+            logger.debug("PropDAO live markets fetch failed: %s", e)
+
+        return self._live_prices_cache
 
     def refresh_markets(self, force: bool = False) -> None:
         """Loads and caches market information from GET /markets."""
@@ -250,7 +277,40 @@ class PropDAOMarket:
         return []
 
     def get_current_price(self, symbol: str) -> float:
-        """Fetches latest mark/last price for symbol."""
+        """
+        Fetches latest mark/last price for symbol directly from PropDAO platform.
+        Falls back to Hyperliquid native DEX feed (allMids), and then candles.
+        """
+        sym = symbol.upper()
+        # 1. Primary: PropDAO direct live pricing endpoint
+        prices = self.refresh_live_prices()
+        if sym in prices:
+            p = prices[sym].get("price") or prices[sym].get("oraclePrice")
+            if p and float(p) > 0:
+                return float(p)
+
+        # Suffix matching (e.g. BTCUSDC vs BTC)
+        coin = sym.replace("USDC", "").replace("USDT", "").replace("-PERP", "").replace("_PERP", "")
+        for k, v in prices.items():
+            if (k == coin or k.startswith(coin)) and (v.get("price") or v.get("oraclePrice")):
+                return float(v.get("price") or v.get("oraclePrice"))
+
+        # 2. Secondary: Hyperliquid allMids (PropDAO's native DEX execution layer)
+        try:
+            payload = json.dumps({"type": "allMids"}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.hyperliquid.xyz/info",
+                data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "PropDAOBot/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                mids = json.loads(resp.read().decode("utf-8"))
+                if isinstance(mids, dict) and coin in mids:
+                    return float(mids[coin])
+        except Exception as e:
+            logger.debug("Hyperliquid allMids fetch failed: %s", e)
+
+        # 3. Fallback: Last closed candle
         candles = self.get_klines(symbol, interval="1m", limit=2)
         if candles:
             return float(candles[-1]["close"])

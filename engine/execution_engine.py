@@ -254,6 +254,10 @@ class ExecutionEngine:
         if self.tracker.has_open_position and not active_pos:
             logger.info("[POSITION CLOSED] Position cleared from exchange. Registering closed trade...")
             self.tracker.register_final_exit(exit_price=cur_price, reason="Exit Filled")
+            try:
+                self.order_manager.cancel_all_orders()
+            except Exception:
+                pass
 
         # 5. Heartbeat while scanning for setups
         self._log_heartbeat(cur_price, active_pos=None)
@@ -354,53 +358,75 @@ class ExecutionEngine:
             )
 
     def _manage_open_position(self, pos: Position, cur_price: float) -> None:
-        """Monitors active position for 1:1 partial profit taking and runner trailing."""
+        """Monitors active position for multi-tier TP1..TP5 partial profit taking and runner trailing."""
         if not self.tracker.has_open_position:
             # Sync existing position into tracker
             sl_px = pos.sl_price or (pos.entry * 0.98 if pos.side == OrderSide.BUY else pos.entry * 1.02)
             dist = abs(pos.entry - sl_px)
             tp_1to1 = pos.entry + dist if pos.side == OrderSide.BUY else pos.entry - dist
             tp_1to2 = pos.entry + (2.0 * dist) if pos.side == OrderSide.BUY else pos.entry - (2.0 * dist)
-            self.tracker.register_entry(pos, target_1to1_price=tp_1to1, target_1to2_price=tp_1to2, sl_price=sl_px)
+            is_long = pos.side == OrderSide.BUY
+            default_tps = [
+                {"id": "tp1", "price": round(pos.entry + (1.0 * dist) if is_long else pos.entry - (1.0 * dist), 2), "size_pct": 50.0},
+                {"id": "tp2", "price": round(pos.entry + (2.0 * dist) if is_long else pos.entry - (2.0 * dist), 2), "size_pct": 50.0}
+            ]
+            self.tracker.register_entry(pos, target_1to1_price=tp_1to1, target_1to2_price=tp_1to2, sl_price=sl_px, tp_levels=default_tps)
 
-        # 1:1 Partial TP + Breakeven Lock logic
-        if self.enable_partial_tp and not self.tracker.partial_tp_taken:
-            hit_1to1 = False
-            if pos.side == OrderSide.BUY and cur_price >= self.tracker.target_1to1_price:
-                hit_1to1 = True
-            elif pos.side == OrderSide.SELL and cur_price <= self.tracker.target_1to1_price:
-                hit_1to1 = True
+        # Multi-Tier TP Evaluation (TP1..TP5)
+        triggered_tp = self.tracker.get_triggered_tp(cur_price)
+        if triggered_tp and self.tracker.check_hold_duration_satisfied():
+            tp_id = triggered_tp["id"]
+            tp_px = triggered_tp["price"]
+            size_pct = triggered_tp["size_pct"]
 
-            if hit_1to1 and self.tracker.check_hold_duration_satisfied():
-                closed_qty = pos.qty * 0.5
-                gross = abs(cur_price - pos.entry) * closed_qty
-                fee = (closed_qty * cur_price) * 0.00045
-                net_pnl = gross - fee
+            # Check if this is the final remaining TP
+            unhit_tps = [t for t in self.tracker.tp_levels if not t["hit"] and t["id"] != tp_id]
+            is_final_tp = len(unhit_tps) == 0
 
-                logger.info(
-                    "\n" + "=" * 76 + "\n"
-                    "[1:1 RR TARGET HIT] Price touched $%.4f (Target: $%.4f)!\n"
-                    "  * Closing 50%% Position: %.5f %s at Market\n"
-                    "  * Gross Profit:         +$%.2f\n"
-                    "  * Estimated Fee:        -$%.2f\n"
-                    "  * Net Realized Profit:  +$%.2f\n"
-                    "  * Action:               Moving Stop Loss to Breakeven ($%.4f + 1 tick buffer)\n"
-                    + "=" * 76,
-                    cur_price, self.tracker.target_1to1_price,
-                    closed_qty, self.symbol,
-                    gross, fee, net_pnl,
-                    pos.entry
-                )
-                try:
-                    # Close 50% of the position
-                    res = self.order_manager.close_position_market(pos.id, percent=0.5)
+            # Compute close fraction relative to remaining position
+            remaining_qty = pos.qty
+            target_close_qty = self.tracker.initial_qty * (size_pct / 100.0)
+            if is_final_tp or target_close_qty >= remaining_qty * 0.95:
+                close_fraction = 1.0
+            else:
+                close_fraction = min(1.0, max(0.05, target_close_qty / remaining_qty))
+
+            closed_qty = remaining_qty * close_fraction
+            gross = abs(cur_price - pos.entry) * closed_qty
+            fee = (closed_qty * cur_price) * 0.00045
+            net_pnl = gross - fee
+
+            logger.info(
+                "\n" + "=" * 76 + "\n"
+                "🎯 [%s TARGET HIT] Price touched $%.4f (Target: $%.4f)!\n"
+                "   ├─ Closing %.1f%% Position: %.5f %s at Market\n"
+                "   ├─ Gross Profit:         %+$%.2f\n"
+                "   ├─ Estimated Fee:        -$%.2f\n"
+                "   ├─ Net Realized Profit:  %+$%.2f\n"
+                "   └─ Remaining Exposure:   %.5f %s\n"
+                + "=" * 76,
+                tp_id.upper(), cur_price, tp_px,
+                close_fraction * 100.0, closed_qty, self.symbol,
+                gross, fee, net_pnl,
+                max(0.0, remaining_qty - closed_qty), self.symbol
+            )
+
+            try:
+                self.order_manager.close_position_market(pos.id, percent=close_fraction)
+                self.tracker.register_partial_exit(closed_qty, cur_price, net_pnl, fee)
+                self.tracker.mark_tp_hit(tp_id)
+
+                # Breakeven lock once TP1 is hit
+                if self.enable_partial_tp and not self.tracker.breakeven_locked:
                     contract = self.market.get_contract_detail(self.symbol)
-                    self.tracker.register_partial_exit(closed_qty, cur_price, net_pnl, fee)
+                    self.order_manager.move_sl_to_breakeven(
+                        pos, buffer_ticks=1, tick_size=contract.price_unit, current_mark=cur_price
+                    )
+                    self.tracker.breakeven_locked = True
+                    logger.info("🛡️ [BREAKEVEN LOCKED] Stop Loss adjusted to entry ($%.4f + 1 tick buffer)", pos.entry)
 
-                    # Move SL to breakeven + buffer ticks
-                    self.order_manager.move_sl_to_breakeven(pos, buffer_ticks=1, tick_size=contract.price_unit)
-                except Exception as e:
-                    logger.error("[PARTIAL TP ERROR] Failed executing 1:1 partial profit close: %s", e)
+            except Exception as e:
+                logger.error("[TP EXECUTION ERROR] Failed executing %s: %s", tp_id.upper(), e)
 
     def _execute_entry_signal(self, signal: TradeSignal, current_price: float) -> None:
         """Executes a confirmed strategy signal with risk budgeting."""
@@ -477,12 +503,27 @@ class ExecutionEngine:
             created_pos = next((p for p in positions if p.symbol == self.symbol), None)
 
             if created_pos:
+                # Configure Multi-Tier TP1..TP5 and SL1..SL5
+                dist = abs(entry_px - sl_px)
+                is_long = side == OrderSide.BUY
+                tp_levels = [
+                    {"id": "tp1", "price": round(entry_px + (1.0 * dist) if is_long else entry_px - (1.0 * dist), 2), "size_pct": 20.0},
+                    {"id": "tp2", "price": round(entry_px + (1.5 * dist) if is_long else entry_px - (1.5 * dist), 2), "size_pct": 20.0},
+                    {"id": "tp3", "price": round(entry_px + (2.0 * dist) if is_long else entry_px - (2.0 * dist), 2), "size_pct": 20.0},
+                    {"id": "tp4", "price": round(entry_px + (2.5 * dist) if is_long else entry_px - (2.5 * dist), 2), "size_pct": 20.0},
+                    {"id": "tp5", "price": round(entry_px + (3.0 * dist) if is_long else entry_px - (3.0 * dist), 2), "size_pct": 20.0},
+                ]
+                sl_levels = [
+                    {"id": "sl1", "price": sl_px, "size_pct": 100.0}
+                ]
                 self.tracker.register_entry(
                     position=created_pos,
                     target_1to1_price=tp_1to1_px,
                     target_1to2_price=tp_px,
                     sl_price=sl_px,
-                    smc_zone_id=zone_id
+                    smc_zone_id=zone_id,
+                    tp_levels=tp_levels,
+                    sl_levels=sl_levels
                 )
                 c_margin = getattr(created_pos, "margin", getattr(created_pos, "margin_allocated", 0.0))
                 logger.info(

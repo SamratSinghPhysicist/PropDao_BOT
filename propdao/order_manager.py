@@ -259,19 +259,114 @@ class PropDAOOrderManager:
         self,
         position: Position,
         buffer_ticks: int = 1,
-        tick_size: float = 0.01
+        tick_size: float = 0.01,
+        current_mark: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Moves stop-loss to entry price plus a tiny profit buffer (breakeven lock).
+        Safely enforces that SL price is never placed beyond current market price
+        to adhere strictly to exchange risk validation rules.
         """
+        mark = current_mark or getattr(position, "mark", None)
         if position.side == OrderSide.BUY:
             be_price = round(position.entry + (buffer_ticks * tick_size), 4)
+            # Exchange rule: for LONG, SL must be <= mark
+            if mark is not None and be_price > mark:
+                be_price = round(mark, 4)
             # Ensure new stop is higher than current stop
             if position.sl_price and be_price <= position.sl_price:
                 return {}
         else:
             be_price = round(position.entry - (buffer_ticks * tick_size), 4)
+            # Exchange rule: for SHORT, SL must be >= mark
+            if mark is not None and be_price < mark:
+                be_price = round(mark, 4)
             if position.sl_price and be_price >= position.sl_price:
                 return {}
 
-        return self.update_brackets(position.id, sl_price=be_price, tp_price=position.tp_price)
+        try:
+            return self.update_brackets(position.id, sl_price=be_price, tp_price=position.tp_price)
+        except Exception as e:
+            logger.warning("Could not move SL to breakeven for %s: %s", position.id, e)
+            return {}
+
+    def place_multi_tp_orders(
+        self,
+        position: Position,
+        tp_levels: List[Tuple[float, float]],  # List of (tp_price, fraction_of_total_qty e.g. 0.20)
+        lot_step: float = 0.001,
+        sz_decimals: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Submits resting reduce-only limit orders at multiple take-profit rungs (e.g. TP1..TP5).
+        """
+        results = []
+        exit_side = "SELL" if position.side == OrderSide.BUY else "BUY"
+        total_qty = position.qty
+
+        for i, (tp_px, fraction) in enumerate(tp_levels, 1):
+            rung_qty = total_qty * fraction
+            if lot_step > 0:
+                rung_qty = round(round(rung_qty / lot_step) * lot_step, sz_decimals)
+            if rung_qty <= 0:
+                rung_qty = lot_step
+
+            try:
+                res = self.client.place_order(
+                    account_id=self.account_id,
+                    symbol=position.symbol,
+                    side=exit_side,
+                    qty=rung_qty,
+                    order_type="limit",
+                    limit_price=tp_px,
+                    reduce_only=True,
+                    tif="gtc"
+                )
+                logger.info("🎯 Resting TP%d order placed: %s %.5f %s @ $%.4f", i, exit_side, rung_qty, position.symbol, tp_px)
+                results.append(res)
+            except Exception as e:
+                logger.error("Failed placing resting TP%d order @ $%.4f: %s", i, tp_px, e)
+
+        return results
+
+    def place_multi_sl_orders(
+        self,
+        position: Position,
+        sl_levels: List[Tuple[float, float]],  # List of (sl_price, fraction_of_total_qty e.g. 0.20)
+        lot_step: float = 0.001,
+        sz_decimals: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Submits armed reduce-only stop-market trigger orders at multiple stop-loss rungs (e.g. SL1..SL5).
+        """
+        results = []
+        exit_side = "SELL" if position.side == OrderSide.BUY else "BUY"
+        total_qty = position.qty
+
+        for i, (sl_px, fraction) in enumerate(sl_levels, 1):
+            rung_qty = total_qty * fraction
+            if lot_step > 0:
+                rung_qty = round(round(rung_qty / lot_step) * lot_step, sz_decimals)
+            if rung_qty <= 0:
+                rung_qty = lot_step
+
+            try:
+                res = self.client.place_order(
+                    account_id=self.account_id,
+                    symbol=position.symbol,
+                    side=exit_side,
+                    qty=rung_qty,
+                    order_type="stop_market",
+                    trigger_price=sl_px,
+                    reduce_only=True
+                )
+                logger.info("🛡️ Armed SL%d trigger order: %s %.5f %s @ $%.4f", i, exit_side, rung_qty, position.symbol, sl_px)
+                results.append(res)
+            except Exception as e:
+                logger.error("Failed arming SL%d trigger order @ $%.4f: %s", i, sl_px, e)
+
+        return results
+
+    def cancel_all_orders(self) -> List[Dict[str, Any]]:
+        """Cancels all resting limit and trigger orders on the account."""
+        return self.client.cancel_all_orders(self.account_id)

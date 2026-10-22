@@ -39,11 +39,16 @@ class PositionTracker:
         self.leverage: float = 1.0
         self.smc_zone_id: Optional[str] = None
 
-        # Partial profit tracking
+        # Partial profit and multi-tier tracking
         self.partial_tp_taken: bool = False
+        self.breakeven_locked: bool = False
         self.target_1to1_price: float = 0.0
         self.target_1to2_price: float = 0.0
         self.sl_price: float = 0.0
+
+        # Multi-Tier Ladders: TP1..TP5 and SL1..SL5
+        self.tp_levels: List[Dict[str, Any]] = []
+        self.sl_levels: List[Dict[str, Any]] = []
 
         # Accumulated metrics
         self.cumulative_realized_pnl: float = 0.0
@@ -57,10 +62,12 @@ class PositionTracker:
     def register_entry(
         self,
         position: Position,
-        target_1to1_price: float,
-        target_1to2_price: float,
-        sl_price: float,
-        smc_zone_id: Optional[str] = None
+        target_1to1_price: float = 0.0,
+        target_1to2_price: float = 0.0,
+        sl_price: float = 0.0,
+        smc_zone_id: Optional[str] = None,
+        tp_levels: Optional[List[Dict[str, Any]]] = None,
+        sl_levels: Optional[List[Dict[str, Any]]] = None
     ) -> None:
         """Invoked when a new trade entry order is confirmed."""
         self.current_position = position
@@ -68,18 +75,56 @@ class PositionTracker:
         self.entry_time = time.time()
         self.initial_qty = position.qty
         self.leverage = position.leverage
-        self.target_1to1_price = target_1to1_price
-        self.target_1to2_price = target_1to2_price
-        self.sl_price = sl_price
+        self.target_1to1_price = target_1to1_price or position.tp_price or 0.0
+        self.target_1to2_price = target_1to2_price or position.tp_price or 0.0
+        self.sl_price = sl_price or position.sl_price or 0.0
         self.smc_zone_id = smc_zone_id
         self.partial_tp_taken = False
+        self.breakeven_locked = False
         self.cumulative_realized_pnl = 0.0
         self.cumulative_fees = position.notional * 0.00045
 
+        # Configure Multi-Tier TP1..TP5
+        self.tp_levels = []
+        if tp_levels:
+            for item in tp_levels:
+                self.tp_levels.append({
+                    "id": item.get("id", f"tp{len(self.tp_levels)+1}"),
+                    "price": float(item.get("price", item.get("triggerPrice", 0.0))),
+                    "size_pct": float(item.get("size_pct", item.get("sizePct", 20.0))),
+                    "hit": False
+                })
+        elif self.target_1to1_price > 0:
+            # Default 2-tier: TP1 (50%) and TP2 (50%)
+            self.tp_levels = [
+                {"id": "tp1", "price": self.target_1to1_price, "size_pct": 50.0, "hit": False},
+                {"id": "tp2", "price": self.target_1to2_price, "size_pct": 50.0, "hit": False}
+            ]
+
+        # Configure Multi-Tier SL1..SL5
+        self.sl_levels = []
+        if sl_levels:
+            for item in sl_levels:
+                self.sl_levels.append({
+                    "id": item.get("id", f"sl{len(self.sl_levels)+1}"),
+                    "price": float(item.get("price", item.get("triggerPrice", 0.0))),
+                    "size_pct": float(item.get("size_pct", item.get("sizePct", 20.0))),
+                    "hit": False
+                })
+        elif self.sl_price > 0:
+            self.sl_levels = [
+                {"id": "sl1", "price": self.sl_price, "size_pct": 100.0, "hit": False}
+            ]
+
+        tp_desc = ", ".join([f"{tp['id'].upper()}: ${tp['price']:.2f} ({tp['size_pct']}%)" for tp in self.tp_levels])
+        sl_desc = ", ".join([f"{sl['id'].upper()}: ${sl['price']:.2f} ({sl['size_pct']}%)" for sl in self.sl_levels])
+
         logger.info(
-            "📍 Position Registered: %s %s %.5f @ %.4f | 1:1 TP: %.4f | 1:2 TP: %.4f | SL: %.4f",
-            position.side.value, self.symbol, position.qty, position.entry,
-            target_1to1_price, target_1to2_price, sl_price
+            "📍 Position Registered: %s %s %.5f @ %.4f (Lev: %.1fx)\n"
+            "   ├─ Take-Profits: %s\n"
+            "   └─ Stop-Losses:  %s",
+            position.side.value, self.symbol, position.qty, position.entry, position.leverage,
+            tp_desc or "N/A", sl_desc or "N/A"
         )
 
     def check_hold_duration_satisfied(self) -> bool:
@@ -102,6 +147,51 @@ class PositionTracker:
         if self.current_position:
             self.current_position.qty = max(0.0, self.current_position.qty - closed_qty)
             self.current_position.notional = self.current_position.qty * self.entry_price
+
+    def get_triggered_tp(self, cur_price: float) -> Optional[Dict[str, Any]]:
+        """Returns the first unhit TP rung whose trigger price has been crossed."""
+        if not self.has_open_position:
+            return None
+        is_long = self.current_position.side == OrderSide.BUY
+        for tp in self.tp_levels:
+            if tp.get("hit"):
+                continue
+            t_px = tp.get("price", 0.0)
+            if t_px <= 0:
+                continue
+            if (is_long and cur_price >= t_px) or (not is_long and cur_price <= t_px):
+                return tp
+        return None
+
+    def get_triggered_sl(self, cur_price: float) -> Optional[Dict[str, Any]]:
+        """Returns the first unhit SL rung whose trigger price has been crossed."""
+        if not self.has_open_position:
+            return None
+        is_long = self.current_position.side == OrderSide.BUY
+        for sl in self.sl_levels:
+            if sl.get("hit"):
+                continue
+            s_px = sl.get("price", 0.0)
+            if s_px <= 0:
+                continue
+            if (is_long and cur_price <= s_px) or (not is_long and cur_price >= s_px):
+                return sl
+        return None
+
+    def mark_tp_hit(self, tp_id: str) -> None:
+        """Marks a TP level as filled."""
+        for tp in self.tp_levels:
+            if tp.get("id") == tp_id:
+                tp["hit"] = True
+                self.partial_tp_taken = True
+                break
+
+    def mark_sl_hit(self, sl_id: str) -> None:
+        """Marks an SL level as filled."""
+        for sl in self.sl_levels:
+            if sl.get("id") == sl_id:
+                sl["hit"] = True
+                break
 
     def register_final_exit(
         self,
