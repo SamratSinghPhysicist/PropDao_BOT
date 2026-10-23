@@ -1,22 +1,23 @@
 """
-PropDAO Unified Execution Engine
-================================
+PropDAO Unified Multi-Asset Execution Engine
+============================================
 Coordinates automated strategy execution across both LIVE and PAPER modes on PropDAO:
-1. Signal evaluation from OrderBlockDemandStrategy.
+1. Multi-symbol SMC OrderBlockDemandStrategy signal evaluation (1m..4h timeframes).
 2. Dynamic risk sizing based on live roomUsd budget.
 3. Order submission (Market, Limit, Trigger) and bracket management (SL & TP).
 4. Automated 1:1 Partial TP + Breakeven Lock & 1:2 Runner TP execution.
 5. Real-time PropDAO risk guard and drawdown breach protection.
-6. Unified high-visibility logging and diagnostic telemetry (heartbeat, SMC zone monitor, PnL).
+6. Unified high-visibility logging and diagnostic telemetry (heartbeat, watchlist monitor, PnL).
 """
 
 from __future__ import annotations
 import logging
+import os
 import signal
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 from propdao.client import PropDAOClient, PropDAOError
 from propdao.market import PropDAOMarket
 from propdao.models import (
@@ -35,24 +36,42 @@ logger = logging.getLogger("ExecutionEngine")
 
 class ExecutionEngine:
     """
-    Main automated trade execution engine for PropDAO.
+    Main automated trade execution engine for PropDAO supporting concurrent multi-symbol trading.
     """
 
     def __init__(
         self,
-        symbol: str = "BTCUSDC",
-        timeframe: str = "15m",
+        symbol: Optional[str] = None,
+        symbols: Optional[Union[str, List[str]]] = None,
+        timeframe: str = "1m",
         mode: EngineMode = EngineMode.PAPER,
         api_key: Optional[str] = None,
         account_id: Optional[str] = None,
         starting_balance: float = 25000.0,
-        risk_fraction: float = 0.25,        # 25% of roomUsd budget
-        leverage: float = 2.0,
+        risk_fraction: float = 0.25,        # 25% of roomUsd budget per trade
+        leverage: float = 1.0,
         enable_partial_tp: bool = True,     # 50% partial exit at 1:1 RR + Breakeven lock
         loop_interval_seconds: float = 3.0, # PropDAO recommends polling no faster than 2-3s
-        heartbeat_interval_seconds: float = 15.0
+        heartbeat_interval_seconds: float = 15.0,
+        max_open_positions: int = 3,
+        pivot_len: Optional[int] = None
     ):
-        self.symbol = symbol.upper()
+        # 1. Parse and normalize symbols universe
+        raw_symbols = symbols if symbols is not None else (symbol or os.getenv("PROPDAO_SYMBOLS") or os.getenv("PROPDAO_SYMBOL") or "BTCUSDC")
+        if isinstance(raw_symbols, str):
+            parts = [p.strip() for p in raw_symbols.replace(";", ",").split(",") if p.strip()]
+            self.symbols = [PropDAOMarket.normalize_symbol(p) for p in parts]
+        elif isinstance(raw_symbols, (list, tuple)):
+            self.symbols = [PropDAOMarket.normalize_symbol(str(p)) for p in raw_symbols if p]
+        else:
+            self.symbols = ["BTCUSDC"]
+
+        if not self.symbols:
+            self.symbols = ["BTCUSDC"]
+
+        # Primary symbol for backward compatibility
+        self.symbol = self.symbols[0]
+
         self.timeframe = timeframe
         self.mode = mode
         self.risk_fraction = risk_fraction
@@ -60,12 +79,13 @@ class ExecutionEngine:
         self.enable_partial_tp = enable_partial_tp
         self.loop_interval = max(2.0, loop_interval_seconds)
         self.heartbeat_interval = max(5.0, heartbeat_interval_seconds)
+        self.max_open_positions = max(1, max_open_positions)
         self._last_heartbeat_time: float = 0.0
 
         self.running: bool = False
         self.account_info: Dict[str, Any] = {}
 
-        # 1. Initialize Client or Local Mock Engine
+        # 2. Initialize Client or Local Mock Engine
         if self.mode in (EngineMode.LIVE, EngineMode.PAPER, "live", "paper"):
             is_paper = self.mode in (EngineMode.PAPER, "paper")
             mode_label = "PAPER (DEMO / TRIAL)" if is_paper else "LIVE (EVALUATION / REAL)"
@@ -90,10 +110,11 @@ class ExecutionEngine:
             self.account_manager = None
             self.account_info = {"status": "ACTIVE", "challenge": {"name": "Local Mock Simulator"}}
 
-        # 2. Market Data Provider
+        # 3. Market Data Provider
         self.market = PropDAOMarket(client=self.client if isinstance(self.client, PropDAOClient) else None)
+        self.timeframe = self.market.normalize_interval(self.timeframe)
 
-        # 3. Risk & Order Managers
+        # 4. Risk & Order Managers
         self.risk_manager = PropDAORiskManager(
             client=self.client,
             market=self.market,
@@ -103,22 +124,29 @@ class ExecutionEngine:
         )
         self.order_manager = PropDAOOrderManager(client=self.client, account_id=self.account_id)
 
-        # 4. Strategy Initialization
-        self.strategy = OrderBlockDemandStrategy(
-            market=self.market,
-            symbol=self.symbol,
-            interval=self.timeframe,
-            pivot_len=5,
-            risk_reward_ratio=2.0,
-            partial_tp_enabled=self.enable_partial_tp,
-            cooldown_seconds=30.0
-        )
+        # 5. Multi-Symbol Strategy & Position Tracker Initialization
+        p_len = pivot_len if pivot_len is not None else (3 if self.timeframe in ("1m", "3m", "5m") else 5)
+        self.strategies: Dict[str, OrderBlockDemandStrategy] = {}
+        self.trackers: Dict[str, PositionTracker] = {}
 
-        # 5. Position Tracker
-        self.tracker = PositionTracker(
-            symbol=self.symbol,
-            on_trade_closed_callback=self._on_trade_closed
-        )
+        for sym in self.symbols:
+            self.strategies[sym] = OrderBlockDemandStrategy(
+                market=self.market,
+                symbol=sym,
+                interval=self.timeframe,
+                pivot_len=p_len,
+                risk_reward_ratio=2.0,
+                partial_tp_enabled=self.enable_partial_tp,
+                cooldown_seconds=30.0
+            )
+            self.trackers[sym] = PositionTracker(
+                symbol=sym,
+                on_trade_closed_callback=self._on_trade_closed
+            )
+
+        # Backward compatibility aliases for primary symbol
+        self.strategy = self.strategies[self.symbol]
+        self.tracker = self.trackers[self.symbol]
 
         # Signal handlers for clean shutdown
         signal.signal(signal.SIGINT, self._handle_exit)
@@ -126,7 +154,9 @@ class ExecutionEngine:
 
     def _on_trade_closed(self, outcome: TradeOutcome) -> None:
         """Callback when position is fully closed."""
-        self.strategy.on_trade_completed(outcome)
+        sym = outcome.symbol
+        if sym in self.strategies:
+            self.strategies[sym].on_trade_completed(outcome)
         hold_sec = int(outcome.close_time - outcome.open_time) if outcome.close_time and outcome.open_time else 0
         hold_str = f"{hold_sec // 60}m {hold_sec % 60}s"
         pnl_pct = (outcome.realized_pnl_usdc / (outcome.notional / outcome.leverage)) * 100 if outcome.notional > 0 else 0.0
@@ -174,14 +204,16 @@ class ExecutionEngine:
             bal_str, eq_str, floor_str, room_str = "Querying...", "Querying...", "Querying...", "Querying..."
 
         print("\n" + "=" * 80)
-        print("          PROPDAO AUTOMATED TRADING BOT - VIVEK YADAV OB+DEMAND SMC")
+        print("     PROPDAO MULTI-ASSET AUTOMATED TRADING BOT - VIVEK YADAV OB+DEMAND SMC")
         print("=" * 80)
         print(f"  Environment Mode:  [{mode_name}]")
         print(f"  Account ID:        {self.account_id.upper()} ({ch_name})")
         print(f"  Account Status:    {status_name}")
         print(f"  Balance / Equity:  {bal_str} / {eq_str}")
         print(f"  Drawdown Floor:    {floor_str} | Available Room: {room_str}")
-        print(f"  Trading Pair:      {self.symbol} @ {self.timeframe} Timeframe")
+        print(f"  Candle Timeframe:  {self.timeframe}")
+        print(f"  Active Watchlist:  {len(self.symbols)} Assets: {', '.join(self.symbols)}")
+        print(f"  Max Concurrent:    {self.max_open_positions} positions")
         print(f"  Leverage:          {self.preferred_leverage:.1f}x (Isolated Margin)")
         print(f"  Risk Budget:       {self.risk_fraction * 100:.1f}% of roomUsd budget per trade")
         print(f"  Target Geometry:   1:1 Partial TP (50% exit + Breakeven Lock) -> 1:2 Runner TP")
@@ -189,8 +221,12 @@ class ExecutionEngine:
         print(f"  Telemetry Log:     propdao_bot.log")
         print("=" * 80 + "\n")
 
-        # Warm up strategy
-        self.strategy.start()
+        # Warm up strategies
+        for strat in self.strategies.values():
+            try:
+                strat.start()
+            except Exception as e:
+                logger.warning("Could not warm up strategy for %s: %s", strat.symbol, e)
 
         consecutive_errors = 0
 
@@ -221,58 +257,80 @@ class ExecutionEngine:
     def stop(self) -> None:
         """Stops trading and performs cleanup."""
         self.running = False
-        self.strategy.stop()
+        for strat in self.strategies.values():
+            try:
+                strat.stop()
+            except Exception:
+                pass
         logger.info("[STOPPED] Bot execution stopped successfully.")
 
     def _iteration(self) -> None:
-        """Single tick iteration of the trading engine."""
-        # 1. Update mark price
-        cur_price = self.market.get_current_price(self.symbol)
-        if cur_price <= 0:
-            return
-
-        # If in paper mode, update virtual exchange mark
-        if isinstance(self.client, PropDAOPaperEngine):
-            self.client.update_mark_price(self.symbol, cur_price)
-
-        # 2. Risk check & protective guard
+        """Single tick iteration across the multi-symbol universe."""
+        # 1. Protective Risk Check & Guard
         safe = self.risk_manager.check_safety_and_guard()
         if not safe:
             return
 
-        # 3. Synchronize open positions
+        # 2. Synchronize all open positions from exchange
         positions = self.order_manager.refresh_positions()
-        active_pos = next((p for p in positions if p.symbol == self.symbol), None)
+        pos_by_sym = {p.symbol: p for p in positions}
 
-        # 4. If we have an active position, monitor brackets and partial take-profit
-        if active_pos:
-            self._manage_open_position(active_pos, cur_price)
-            self._log_heartbeat(cur_price, active_pos=active_pos)
+        # 3. Manage positions and track state for each symbol
+        for sym in self.symbols:
+            cur_price = self.market.get_current_price(sym)
+            if cur_price <= 0:
+                continue
+
+            if isinstance(self.client, PropDAOPaperEngine):
+                self.client.update_mark_price(sym, cur_price)
+
+            active_pos = pos_by_sym.get(sym)
+            tracker = self.trackers.get(sym)
+
+            if active_pos:
+                self._manage_open_position(sym, active_pos, cur_price)
+            else:
+                if tracker and tracker.has_open_position:
+                    logger.info("[%s POSITION CLOSED] Position cleared from exchange. Registering trade close...", sym)
+                    tracker.register_final_exit(exit_price=cur_price, reason="Exit Filled")
+                    try:
+                        self.order_manager.cancel_all_orders()
+                    except Exception:
+                        pass
+
+        # 4. Structured Heartbeat Log
+        self._log_heartbeat(pos_by_sym)
+
+        # 5. Scan for new entries across symbols not currently in position
+        active_positions_count = len(pos_by_sym)
+        if active_positions_count >= self.max_open_positions:
             return
 
-        # If tracker thought we had a position but positions are empty, register closed trade
-        if self.tracker.has_open_position and not active_pos:
-            logger.info("[POSITION CLOSED] Position cleared from exchange. Registering closed trade...")
-            self.tracker.register_final_exit(exit_price=cur_price, reason="Exit Filled")
-            try:
-                self.order_manager.cancel_all_orders()
-            except Exception:
-                pass
-
-        # 5. Heartbeat while scanning for setups
-        self._log_heartbeat(cur_price, active_pos=None)
-
-        # 6. No active position: Evaluate strategy for entry signals
         now = time.time()
-        if not self.strategy.should_generate_signal(now):
-            return
+        for sym in self.symbols:
+            if sym in pos_by_sym:
+                continue
+            if active_positions_count >= self.max_open_positions:
+                break
 
-        signal = self.strategy.generate_signal(self.symbol)
-        if signal:
-            self._execute_entry_signal(signal, cur_price)
+            strat = self.strategies.get(sym)
+            if not strat or not strat.should_generate_signal(now):
+                continue
 
-    def _log_heartbeat(self, cur_price: float, active_pos: Optional[Position]) -> None:
-        """Emits structured heartbeat log with mark price, account metrics, zones, and status."""
+            cur_price = self.market.get_current_price(sym)
+            if cur_price <= 0:
+                continue
+
+            signal = strat.generate_signal(sym)
+            if signal:
+                opened = self._execute_entry_signal(sym, signal, cur_price)
+                if opened:
+                    active_positions_count += 1
+                    positions = self.order_manager.refresh_positions()
+                    pos_by_sym = {p.symbol: p for p in positions}
+
+    def _log_heartbeat(self, open_pos_map: Dict[str, Position]) -> None:
+        """Emits structured multi-symbol heartbeat log."""
         now = time.time()
         if (now - self._last_heartbeat_time) < self.heartbeat_interval:
             return
@@ -286,80 +344,52 @@ class ExecutionEngine:
         ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         mode_str = self.mode.value.upper() if hasattr(self.mode, "value") else str(self.mode).upper()
 
-        if active_pos:
-            is_long = active_pos.side == OrderSide.BUY
-            unrealized_usd = (cur_price - active_pos.entry) * active_pos.qty if is_long else (active_pos.entry - cur_price) * active_pos.qty
-            margin_val = getattr(active_pos, "margin", getattr(active_pos, "margin_allocated", None))
-            margin_used = float(margin_val) if (margin_val and margin_val > 0) else (active_pos.qty * active_pos.entry / (active_pos.leverage or 1.0))
-            unrealized_pct = (unrealized_usd / margin_used) * 100 if margin_used > 0 else 0.0
-            hold_sec = int(time.time() - self.tracker.entry_time) if self.tracker.entry_time > 0 else 0
-            hold_str = f"{hold_sec // 60}m {hold_sec % 60}s"
+        lines = [
+            "\n" + "-" * 80,
+            f"[HEARTBEAT] {ts_str} | PropDAO {mode_str} | Acct: {self.account_id.upper()} | TF: {self.timeframe}",
+            f"  * Capital:     Equity: ${risk.equity:,.2f} | Balance: ${risk.balance:,.2f} | Floor: ${risk.floor:,.2f}",
+            f"  * Drawdown:    Room: ${risk.room_usd:,.2f} ({risk.room_pct:.2f}% above floor) | Max Concur: {self.max_open_positions}",
+            f"  * Positions:   {len(open_pos_map)} Active / {len(self.symbols)} Monitored",
+        ]
 
-            sl_px = self.tracker.sl_price or active_pos.sl_price or 0.0
-            tp1_px = self.tracker.target_1to1_price or 0.0
-            tp2_px = self.tracker.target_1to2_price or active_pos.tp_price or 0.0
+        if open_pos_map:
+            lines.append("  * Active Positions:")
+            for sym, pos in open_pos_map.items():
+                cur_px = self.market.get_current_price(sym)
+                is_long = pos.side == OrderSide.BUY
+                unrealized = (cur_px - pos.entry) * pos.qty if is_long else (pos.entry - cur_px) * pos.qty
+                tracker = self.trackers.get(sym)
+                hold_sec = int(time.time() - tracker.entry_time) if (tracker and tracker.entry_time > 0) else 0
+                hold_str = f"{hold_sec // 60}m {hold_sec % 60}s"
+                sl_px = tracker.sl_price if tracker else (pos.sl_price or 0.0)
+                tp_px = tracker.target_1to2_price if tracker else (pos.tp_price or 0.0)
+                pnl_sign = "+$" if unrealized >= 0 else "-$"
+                lines.append(
+                    f"     - {sym}: {pos.side.value} {pos.qty:.4f} @ ${pos.entry:.4f} (Mark: ${cur_px:.4f} | PnL: {pnl_sign}{abs(unrealized):.2f} | SL: ${sl_px:.4f} | TP: ${tp_px:.4f} | Hold: {hold_str})"
+                )
 
-            sl_dist = abs(cur_price - sl_px)
-            tp2_dist = abs(cur_price - tp2_px)
+        scan_parts = []
+        for sym in self.symbols:
+            strat = self.strategies.get(sym)
+            px = self.market.get_current_price(sym)
+            zones = len(strat.active_zones) if strat else 0
+            in_pos = " [IN POS]" if sym in open_pos_map else ""
+            scan_parts.append(f"{sym}: ${px:.2f} ({zones}z){in_pos}")
 
-            ptp_state = "[TAKEN - Breakeven Locked]" if self.tracker.partial_tp_taken else f"Pending (${abs(cur_price - tp1_px):.2f} away)"
-            state_desc = "MANAGING RUNNER (Awaiting 1:2 TP)" if self.tracker.partial_tp_taken else "IN POSITION (Awaiting 1:1 TP target)"
+        lines.append(f"  * Watchlist:   {' | '.join(scan_parts[:6])}")
+        if len(scan_parts) > 6:
+            lines.append(f"                 {' | '.join(scan_parts[6:])}")
+        lines.append("-" * 80)
 
-            logger.info(
-                "\n" + "-" * 76 + "\n"
-                "[HEARTBEAT] %s | %s @ %s | Mark: $%.2f | Acct: %s (%s)\n"
-                "  * Position:    %s %.5f %s (%.1fx Lev) | Entry: $%.2f | Hold: %s\n"
-                "  * Unrealized:  %+$%.2f (%+.2f%%) | Margin: $%.2f\n"
-                "  * Brackets:    SL: $%.2f ($%.2f away) | 1:1 TP: $%.2f | 1:2 TP: $%.2f ($%.2f away)\n"
-                "  * 1:1 Exit:    %s\n"
-                "  * Risk Limits: Balance: $%.2f | Floor: $%.2f | Room: $%.2f (%.2f%%)\n"
-                "  * State:       %s\n"
-                + "-" * 76,
-                ts_str, self.symbol, self.timeframe, cur_price, self.account_id.upper(), mode_str,
-                active_pos.side.value, active_pos.qty, self.symbol, active_pos.leverage, active_pos.entry, hold_str,
-                unrealized_usd, unrealized_pct, margin_used,
-                sl_px, sl_dist, tp1_px, tp2_px, tp2_dist,
-                ptp_state,
-                risk.balance, risk.floor, risk.room_usd, risk.room_pct,
-                state_desc
-            )
-        else:
-            bull_zones = [z for z in self.strategy.active_zones.values() if z.is_bullish]
-            bear_zones = [z for z in self.strategy.active_zones.values() if z.is_bearish]
-            nearest_bull = max(bull_zones, key=lambda z: z.high) if bull_zones else None
-            nearest_bear = min(bear_zones, key=lambda z: z.low) if bear_zones else None
+        logger.info("\n".join(lines))
 
-            bull_info = "None in lookback"
-            if nearest_bull:
-                pct_away = ((cur_price - nearest_bull.high) / cur_price) * 100
-                bull_info = f"[{nearest_bull.low:.2f} - {nearest_bull.high:.2f}] ({pct_away:+.2f}% away)"
-
-            bear_info = "None in lookback"
-            if nearest_bear:
-                pct_away = ((nearest_bear.low - cur_price) / cur_price) * 100
-                bear_info = f"[{nearest_bear.low:.2f} - {nearest_bear.high:.2f}] ({pct_away:+.2f}% away)"
-
-            logger.info(
-                "\n" + "-" * 76 + "\n"
-                "[HEARTBEAT] %s | %s @ %s | Mark: $%.2f | Acct: %s (%s)\n"
-                "  * Account:     Equity: $%.2f | Balance: $%.2f | Floor: $%.2f\n"
-                "  * Room:        $%.2f (%.2f%% room above drawdown floor)\n"
-                "  * Watchlist:   %d Active SMC Zones (%d Bullish Demand/OB, %d Bearish Supply/OB)\n"
-                "  * Nearest Support (Bullish OB):    %s\n"
-                "  * Nearest Resistance (Bearish OB): %s\n"
-                "  * State:       SCANNING (Awaiting price retest into zone & confirmation candle)\n"
-                + "-" * 76,
-                ts_str, self.symbol, self.timeframe, cur_price, self.account_id.upper(), mode_str,
-                risk.equity, risk.balance, risk.floor,
-                risk.room_usd, risk.room_pct,
-                len(self.strategy.active_zones), len(bull_zones), len(bear_zones),
-                bull_info,
-                bear_info
-            )
-
-    def _manage_open_position(self, pos: Position, cur_price: float) -> None:
+    def _manage_open_position(self, sym: str, pos: Position, cur_price: float) -> None:
         """Monitors active position for multi-tier TP1..TP5 partial profit taking and runner trailing."""
-        if not self.tracker.has_open_position:
+        tracker = self.trackers.get(sym)
+        if not tracker:
+            return
+
+        if not tracker.has_open_position:
             # Sync existing position into tracker
             sl_px = pos.sl_price or (pos.entry * 0.98 if pos.side == OrderSide.BUY else pos.entry * 1.02)
             dist = abs(pos.entry - sl_px)
@@ -367,25 +397,25 @@ class ExecutionEngine:
             tp_1to2 = pos.entry + (2.0 * dist) if pos.side == OrderSide.BUY else pos.entry - (2.0 * dist)
             is_long = pos.side == OrderSide.BUY
             default_tps = [
-                {"id": "tp1", "price": round(pos.entry + (1.0 * dist) if is_long else pos.entry - (1.0 * dist), 2), "size_pct": 50.0},
-                {"id": "tp2", "price": round(pos.entry + (2.0 * dist) if is_long else pos.entry - (2.0 * dist), 2), "size_pct": 50.0}
+                {"id": "tp1", "price": round(pos.entry + (1.0 * dist) if is_long else pos.entry - (1.0 * dist), 4), "size_pct": 50.0},
+                {"id": "tp2", "price": round(pos.entry + (2.0 * dist) if is_long else pos.entry - (2.0 * dist), 4), "size_pct": 50.0}
             ]
-            self.tracker.register_entry(pos, target_1to1_price=tp_1to1, target_1to2_price=tp_1to2, sl_price=sl_px, tp_levels=default_tps)
+            tracker.register_entry(pos, target_1to1_price=tp_1to1, target_1to2_price=tp_1to2, sl_price=sl_px, tp_levels=default_tps)
 
         # Multi-Tier TP Evaluation (TP1..TP5)
-        triggered_tp = self.tracker.get_triggered_tp(cur_price)
-        if triggered_tp and self.tracker.check_hold_duration_satisfied():
+        triggered_tp = tracker.get_triggered_tp(cur_price)
+        if triggered_tp and tracker.check_hold_duration_satisfied():
             tp_id = triggered_tp["id"]
             tp_px = triggered_tp["price"]
             size_pct = triggered_tp["size_pct"]
 
             # Check if this is the final remaining TP
-            unhit_tps = [t for t in self.tracker.tp_levels if not t["hit"] and t["id"] != tp_id]
+            unhit_tps = [t for t in tracker.tp_levels if not t["hit"] and t["id"] != tp_id]
             is_final_tp = len(unhit_tps) == 0
 
             # Compute close fraction relative to remaining position
             remaining_qty = pos.qty
-            target_close_qty = self.tracker.initial_qty * (size_pct / 100.0)
+            target_close_qty = tracker.initial_qty * (size_pct / 100.0)
             if is_final_tp or target_close_qty >= remaining_qty * 0.95:
                 close_fraction = 1.0
             else:
@@ -398,38 +428,40 @@ class ExecutionEngine:
 
             logger.info(
                 "\n" + "=" * 76 + "\n"
-                "🎯 [%s TARGET HIT] Price touched $%.4f (Target: $%.4f)!\n"
+                "🎯 [%s TARGET HIT] %s touched $%.4f (Target: $%.4f)!\n"
                 "   ├─ Closing %.1f%% Position: %.5f %s at Market\n"
                 "   ├─ Gross Profit:         %+$%.2f\n"
                 "   ├─ Estimated Fee:        -$%.2f\n"
                 "   ├─ Net Realized Profit:  %+$%.2f\n"
                 "   └─ Remaining Exposure:   %.5f %s\n"
                 + "=" * 76,
-                tp_id.upper(), cur_price, tp_px,
-                close_fraction * 100.0, closed_qty, self.symbol,
+                tp_id.upper(), sym, cur_price, tp_px,
+                close_fraction * 100.0, closed_qty, sym,
                 gross, fee, net_pnl,
-                max(0.0, remaining_qty - closed_qty), self.symbol
+                max(0.0, remaining_qty - closed_qty), sym
             )
 
             try:
                 self.order_manager.close_position_market(pos.id, percent=close_fraction)
-                self.tracker.register_partial_exit(closed_qty, cur_price, net_pnl, fee)
-                self.tracker.mark_tp_hit(tp_id)
+                tracker.register_partial_exit(closed_qty, cur_price, net_pnl, fee)
+                tracker.mark_tp_hit(tp_id)
 
                 # Breakeven lock once TP1 is hit
-                if self.enable_partial_tp and not self.tracker.breakeven_locked:
-                    contract = self.market.get_contract_detail(self.symbol)
+                if self.enable_partial_tp and not tracker.breakeven_locked:
+                    contract = self.market.get_contract_detail(sym)
                     self.order_manager.move_sl_to_breakeven(
                         pos, buffer_ticks=1, tick_size=contract.price_unit, current_mark=cur_price
                     )
-                    self.tracker.breakeven_locked = True
-                    logger.info("🛡️ [BREAKEVEN LOCKED] Stop Loss adjusted to entry ($%.4f + 1 tick buffer)", pos.entry)
+                    tracker.breakeven_locked = True
+                    logger.info("🛡️ [%s BREAKEVEN LOCKED] Stop Loss adjusted to entry ($%.4f + 1 tick buffer)", sym, pos.entry)
 
             except Exception as e:
-                logger.error("[TP EXECUTION ERROR] Failed executing %s: %s", tp_id.upper(), e)
+                logger.error("[%s TP EXECUTION ERROR] Failed executing %s: %s", sym, tp_id.upper(), e)
 
-    def _execute_entry_signal(self, signal: TradeSignal, current_price: float) -> None:
+    def _execute_entry_signal(self, sym: str, signal: TradeSignal, current_price: float) -> bool:
         """Executes a confirmed strategy signal with risk budgeting."""
+        tracker = self.trackers.get(sym)
+        strat = self.strategies.get(sym)
         entry_px = signal.metadata.get("entry_price", current_price)
         sl_px = signal.metadata.get("stop_loss_price")
         tp_px = signal.metadata.get("take_profit_price")
@@ -437,21 +469,22 @@ class ExecutionEngine:
         zone_id = signal.metadata.get("zone_id")
 
         if not sl_px:
-            logger.warning("[SIGNAL REJECTED] Signal missing stop loss price. Rejecting entry.")
-            return
+            logger.warning("[%s SIGNAL REJECTED] Missing stop loss price.", sym)
+            return False
 
         # 1. Calculate sizing constrained by roomUsd
         try:
             qty, lev, margin = self.risk_manager.calculate_order_sizing(
-                symbol=self.symbol,
+                symbol=sym,
                 entry_price=entry_px,
                 stop_loss_price=sl_px,
                 preferred_leverage=self.preferred_leverage
             )
         except Exception as e:
-            logger.warning("[SIZING ERROR] Could not size order for %s: %s", self.symbol, e)
-            self.strategy.on_trade_rejected()
-            return
+            logger.warning("[%s SIZING ERROR] Could not size order: %s", sym, e)
+            if strat:
+                strat.on_trade_rejected()
+            return False
 
         side = OrderSide.BUY if signal.direction == OrderDirection.LONG else OrderSide.SELL
         risk = self.risk_manager.get_risk_state()
@@ -474,22 +507,22 @@ class ExecutionEngine:
             "  * Remaining Cash:  $%.2f\n"
             "[SUBMITTING ORDER] %s Market %.5f %s with attached SL/TP brackets...\n"
             + "=" * 76,
-            signal.direction.value, self.symbol, zone_id or "SMC_ZONE",
+            signal.direction.value, sym, zone_id or "SMC_ZONE",
             entry_px, current_price,
             sl_px, sl_dist, sl_dist_pct,
             tp_1to1_px,
             tp_px,
             risk.room_usd,
             self.risk_fraction * 100, risk_budget,
-            qty, self.symbol, qty * entry_px,
+            qty, sym, qty * entry_px,
             lev, margin,
             risk.balance - margin,
-            side.value, qty, self.symbol
+            side.value, qty, sym
         )
 
         try:
             res = self.order_manager.open_market(
-                symbol=self.symbol,
+                symbol=sym,
                 side=side,
                 qty=qty,
                 leverage=lev,
@@ -500,23 +533,23 @@ class ExecutionEngine:
             # Wait briefly for fill to register and fetch created position
             time.sleep(1.0)
             positions = self.order_manager.refresh_positions()
-            created_pos = next((p for p in positions if p.symbol == self.symbol), None)
+            created_pos = next((p for p in positions if p.symbol == sym), None)
 
-            if created_pos:
+            if created_pos and tracker:
                 # Configure Multi-Tier TP1..TP5 and SL1..SL5
                 dist = abs(entry_px - sl_px)
                 is_long = side == OrderSide.BUY
                 tp_levels = [
-                    {"id": "tp1", "price": round(entry_px + (1.0 * dist) if is_long else entry_px - (1.0 * dist), 2), "size_pct": 20.0},
-                    {"id": "tp2", "price": round(entry_px + (1.5 * dist) if is_long else entry_px - (1.5 * dist), 2), "size_pct": 20.0},
-                    {"id": "tp3", "price": round(entry_px + (2.0 * dist) if is_long else entry_px - (2.0 * dist), 2), "size_pct": 20.0},
-                    {"id": "tp4", "price": round(entry_px + (2.5 * dist) if is_long else entry_px - (2.5 * dist), 2), "size_pct": 20.0},
-                    {"id": "tp5", "price": round(entry_px + (3.0 * dist) if is_long else entry_px - (3.0 * dist), 2), "size_pct": 20.0},
+                    {"id": "tp1", "price": round(entry_px + (1.0 * dist) if is_long else entry_px - (1.0 * dist), 4), "size_pct": 20.0},
+                    {"id": "tp2", "price": round(entry_px + (1.5 * dist) if is_long else entry_px - (1.5 * dist), 4), "size_pct": 20.0},
+                    {"id": "tp3", "price": round(entry_px + (2.0 * dist) if is_long else entry_px - (2.0 * dist), 4), "size_pct": 20.0},
+                    {"id": "tp4", "price": round(entry_px + (2.5 * dist) if is_long else entry_px - (2.5 * dist), 4), "size_pct": 20.0},
+                    {"id": "tp5", "price": round(entry_px + (3.0 * dist) if is_long else entry_px - (3.0 * dist), 4), "size_pct": 20.0},
                 ]
                 sl_levels = [
                     {"id": "sl1", "price": sl_px, "size_pct": 100.0}
                 ]
-                self.tracker.register_entry(
+                tracker.register_entry(
                     position=created_pos,
                     target_1to1_price=tp_1to1_px,
                     target_1to2_price=tp_px,
@@ -528,11 +561,15 @@ class ExecutionEngine:
                 c_margin = getattr(created_pos, "margin", getattr(created_pos, "margin_allocated", 0.0))
                 logger.info(
                     "✅ [POSITION CONFIRMED] %s %.5f %s @ $%.4f (Margin: $%.2f, Lev: %.1fx, ID: %s)",
-                    created_pos.side.value, created_pos.qty, self.symbol,
+                    created_pos.side.value, created_pos.qty, sym,
                     created_pos.entry, c_margin, created_pos.leverage, created_pos.id
                 )
+                return True
             else:
-                logger.info("[ORDER SUBMITTED] Order sent, awaiting position synchronization in next tick...")
+                logger.info("[%s ORDER SUBMITTED] Order sent, awaiting position synchronization in next tick...", sym)
+                return True
         except Exception as e:
-            logger.error("[SUBMISSION FAILED] Failed submitting entry order: %s", e)
-            self.strategy.on_trade_rejected()
+            logger.error("[%s SUBMISSION FAILED] Failed submitting entry order: %s", sym, e)
+            if strat:
+                strat.on_trade_rejected()
+            return False

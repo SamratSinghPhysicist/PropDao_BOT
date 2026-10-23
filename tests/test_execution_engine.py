@@ -118,6 +118,35 @@ class TestExecutionEngine(unittest.TestCase):
         self.assertTrue(risk.breached)
         self.assertEqual(len(self.order_mgr.refresh_positions()), 0)
 
+    def test_multi_symbol_initialization_and_normalization(self):
+        from engine.execution_engine import ExecutionEngine
+        from propdao.models import EngineMode
+
+        raw_input = "NEAR USDT, SUI USDT, GOLD USDT, SILVER USDT,  BTC USDT, ETH USDT, SOL USDT, TSLA USDT, SPCX USDT, GOOGL USDT, XRP USDT, TRUMP USDT"
+        engine = ExecutionEngine(
+            symbols=raw_input,
+            timeframe="1m",
+            mode=EngineMode.MOCK,
+            starting_balance=50000.0,
+            max_open_positions=3
+        )
+
+        expected = [
+            "NEARUSDC", "SUIUSDC", "GOLDUSDC", "SILVERUSDC",
+            "BTCUSDC", "ETHUSDC", "SOLUSDC", "TSLAUSDC",
+            "SPCXUSDC", "GOOGLUSDC", "XRPUSDC", "TRUMPUSDC"
+        ]
+        self.assertEqual(engine.symbols, expected)
+        self.assertEqual(engine.symbol, "NEARUSDC")
+        self.assertEqual(engine.timeframe, "1m")
+        self.assertEqual(len(engine.strategies), 12)
+        self.assertEqual(len(engine.trackers), 12)
+        for sym in expected:
+            self.assertIn(sym, engine.strategies)
+            self.assertIn(sym, engine.trackers)
+            self.assertEqual(engine.strategies[sym].symbol, sym)
+            self.assertIn(engine.strategies[sym].interval, ("1m", "Min1"))
+
 
 if __name__ == "__main__":
     unittest.main()

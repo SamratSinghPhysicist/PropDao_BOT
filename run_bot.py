@@ -44,6 +44,14 @@ logging.basicConfig(
 logger = logging.getLogger("PropDAOBot")
 
 
+DEFAULT_WATCHLIST = [
+    "NEARUSDC", "SUIUSDC", "GOLDUSDC", "SILVERUSDC",
+    "BTCUSDC", "ETHUSDC", "SOLUSDC", "TSLAUSDC",
+    "SPCXUSDC", "GOOGLUSDC", "XRPUSDC", "TRUMPUSDC"
+]
+DEFAULT_SYMBOLS = os.getenv("PROPDAO_SYMBOLS", os.getenv("PROPDAO_SYMBOL", ",".join(DEFAULT_WATCHLIST)))
+
+
 def main():
     default_mode = os.getenv("PROPDAO_MODE", "paper").lower()
     if default_mode not in ("live", "paper", "mock"):
@@ -51,8 +59,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="PropDAO Trading Bot")
     parser.add_argument("--mode", type=str, choices=["live", "paper", "mock"], default=default_mode, help="Execution mode (live=Real Eval Account, paper=PropDAO Trial Account, mock=Local offline mock)")
-    parser.add_argument("--symbol", type=str, default=os.getenv("PROPDAO_SYMBOL", "BTCUSDC"), help="Trading symbol (e.g. BTCUSDC)")
-    parser.add_argument("--timeframe", type=str, default=os.getenv("PROPDAO_TIMEFRAME", "4h"), help="Strategy candle timeframe")
+    parser.add_argument("--symbols", "--symbol", dest="symbols", type=str, default=DEFAULT_SYMBOLS, help="Trading symbol(s) comma-separated (e.g. NEARUSDC,SUIUSDC,GOLDUSDC,...)")
+    parser.add_argument("--timeframe", type=str, default=os.getenv("PROPDAO_TIMEFRAME", "1m"), help="Strategy candle timeframe (default: 1m)")
+    parser.add_argument("--max-positions", type=int, default=int(os.getenv("PROPDAO_MAX_POSITIONS", "3")), help="Maximum concurrent open positions across watchlist (default: 3)")
     parser.add_argument("--account", type=str, default=os.getenv("PROPDAO_ACCOUNT", "PROP-HG2JY49A"), help="PropDAO account ID (e.g. PROP-HG2JY49A for Trial, PROP-SC2UNNDB for Eval)")
     parser.add_argument("--api-key", type=str, default=os.getenv("PROPDAO_API_KEY", None), help="PropDAO Bearer API Key")
     parser.add_argument("--balance", type=float, default=50000.0, help="Initial balance for offline mock testing")
@@ -82,7 +91,7 @@ def main():
         engine_mode = EngineMode.MOCK
 
     bot = ExecutionEngine(
-        symbol=args.symbol.upper(),
+        symbols=args.symbols,
         timeframe=args.timeframe,
         mode=engine_mode,
         api_key=args.api_key,
@@ -92,7 +101,8 @@ def main():
         leverage=args.leverage,
         enable_partial_tp=not args.no_partial_tp,
         loop_interval_seconds=args.interval,
-        heartbeat_interval_seconds=args.heartbeat
+        heartbeat_interval_seconds=args.heartbeat,
+        max_open_positions=args.max_positions
     )
 
     try:

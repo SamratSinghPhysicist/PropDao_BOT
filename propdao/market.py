@@ -135,6 +135,28 @@ class PropDAOMarket:
         """Alias for get_contract_detail."""
         return self.get_contract_detail(symbol)
 
+    @staticmethod
+    def normalize_symbol(symbol: str) -> str:
+        """
+        Normalizes any input symbol into the canonical PropDAO contract format.
+        Examples:
+            'NEAR USDT'   -> 'NEARUSDC'
+            'NEARUSDT'    -> 'NEARUSDC'
+            'BTC/USDT'    -> 'BTCUSDC'
+            'GOLD USDT'   -> 'GOLDUSDC'
+            'SILVER USDT' -> 'SILVERUSDC'
+            'TSLA'        -> 'TSLAUSDC'
+            'ETHUSDC'     -> 'ETHUSDC'
+        """
+        if not symbol:
+            return "BTCUSDC"
+        s = symbol.strip().upper().replace(" ", "").replace("/", "").replace("-", "").replace("_", "")
+        if s.endswith("USDT"):
+            s = s[:-4] + "USDC"
+        elif not s.endswith("USDC"):
+            s = f"{s}USDC"
+        return s
+
     def normalize_interval(self, interval: str) -> str:
         """Normalizes timeframes like '15m', 'Min15', '1h', etc. to standard format."""
         s = str(interval).lower().replace("min", "m")
@@ -179,13 +201,14 @@ class PropDAOMarket:
                 return data
 
         coin = sym.replace("USDC", "").replace("USDT", "").replace("-PERP", "").replace("_PERP", "")
+        coin_alt_map = {"GOLD": "XAU", "SILVER": "XAG"}
 
         # 1. Primary Source: Hyperliquid Official API (Native PropDAO liquidity layer, never blocks cloud IPs)
         hl_intervals = {
             "1m": 60000, "3m": 180000, "5m": 300000, "15m": 900000,
             "30m": 1800000, "1h": 3600000, "4h": 14400000, "1d": 86400000
         }
-        if norm_int in hl_intervals:
+        if norm_int in hl_intervals and coin not in ("GOLD", "SILVER"):
             try:
                 step_ms = hl_intervals[norm_int]
                 now_ms = int(time.time() * 1000)
@@ -224,7 +247,8 @@ class PropDAOMarket:
             "30m": "30", "1h": "60", "4h": "240", "1d": "D"
         }
         bb_int = bybit_map.get(norm_int, "60")
-        bb_pair = f"{coin}USDT"
+        bb_coin = coin_alt_map.get(coin, coin)
+        bb_pair = f"{bb_coin}USDT"
         try:
             url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={bb_pair}&interval={bb_int}&limit={limit}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -250,7 +274,8 @@ class PropDAOMarket:
             logger.debug("Bybit kline fallback failed for %s: %s. Trying Binance...", bb_pair, e)
 
         # 3. Tertiary Fallback: Binance Public Market Data API
-        pair = sym.replace("USDC", "USDT")
+        bn_coin = coin_alt_map.get(coin, coin)
+        pair = f"{bn_coin}USDT"
         url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={norm_int}&limit={limit}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})

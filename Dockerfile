@@ -21,12 +21,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application source code
 COPY . /app/
 
-# Default runtime configuration (can be overridden via Railway environment variables)
-ENV PROPDAO_SYMBOL=BTCUSDC
-ENV PROPDAO_TIMEFRAME=4h
+# Default runtime configuration (can be overridden via Railway/SillyDev environment variables)
+ENV PROPDAO_SYMBOLS=NEARUSDC,SUIUSDC,GOLDUSDC,SILVERUSDC,BTCUSDC,ETHUSDC,SOLUSDC,TSLAUSDC,SPCXUSDC,GOOGLUSDC,XRPUSDC,TRUMPUSDC
+ENV PROPDAO_SYMBOL=NEARUSDC,SUIUSDC,GOLDUSDC,SILVERUSDC,BTCUSDC,ETHUSDC,SOLUSDC,TSLAUSDC,SPCXUSDC,GOOGLUSDC,XRPUSDC,TRUMPUSDC
+ENV PROPDAO_TIMEFRAME=1m
+ENV PROPDAO_MAX_POSITIONS=3
 ENV PROPDAO_LEVERAGE=1.0
 ENV PROPDAO_RISK_FRACTION=0.25
-ENV PROPDAO_MODE=live
+ENV PROPDAO_MODE=paper
 
 # Start the trading bot worker
 CMD ["python", "-u", "run_bot.py"]
