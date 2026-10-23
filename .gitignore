@@ -14,3 +14,4 @@ BACKTESTER/Historical_Trades_Data_Binance/
 BACKTESTER/reports/
 .idea/
 .vscode/
+*.zip
