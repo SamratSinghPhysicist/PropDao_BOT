@@ -161,15 +161,18 @@ class ExecutionEngine:
         hold_str = f"{hold_sec // 60}m {hold_sec % 60}s"
         pnl_pct = (outcome.realized_pnl_usdc / (outcome.notional / outcome.leverage)) * 100 if outcome.notional > 0 else 0.0
 
+        gross_sign = "+$" if outcome.gross_pnl >= 0 else "-$"
+        net_sign = "+$" if outcome.realized_pnl_usdc >= 0 else "-$"
+
         logger.info(
             "\n" + "=" * 76 + "\n"
             "🏁 [TRADE COMPLETED] Trade #%d Closed (%s %s)\n"
             "   ├─ Entry Price:   $%.4f\n"
             "   ├─ Exit Price:    $%.4f\n"
             "   ├─ Position Qty:  %.5f (%.1fx Leverage Isolated)\n"
-            "   ├─ Gross PnL:     %+$%.2f\n"
+            "   ├─ Gross PnL:     %s%.2f\n"
             "   ├─ Fees Paid:     -$%.2f\n"
-            "   ├─ Net PnL:       %+$%.2f (%+.2f%%)\n"
+            "   ├─ Net PnL:       %s%.2f (%+.2f%%)\n"
             "   ├─ Exit Reason:   %s\n"
             "   ├─ Hold Duration: %s\n"
             "   └─ Zone ID:       %s\n"
@@ -177,7 +180,8 @@ class ExecutionEngine:
             outcome.trade_id, outcome.direction.value, outcome.symbol,
             outcome.entry_price, outcome.exit_price,
             outcome.quantity, outcome.leverage,
-            outcome.gross_pnl, outcome.fee, outcome.realized_pnl_usdc, pnl_pct,
+            gross_sign, abs(outcome.gross_pnl), outcome.fee,
+            net_sign, abs(outcome.realized_pnl_usdc), pnl_pct,
             outcome.exit_reason, hold_str, outcome.smc_zone_id or "N/A"
         )
 
@@ -427,19 +431,21 @@ class ExecutionEngine:
             gross = abs(cur_price - pos.entry) * closed_qty
             fee = (closed_qty * cur_price) * 0.00045
             net_pnl = gross - fee
+            gross_sign = "+$" if gross >= 0 else "-$"
+            net_sign = "+$" if net_pnl >= 0 else "-$"
 
             logger.info(
                 "\n" + "=" * 76 + "\n"
                 "🎯 [%s TARGET HIT] %s touched $%.4f (Target: $%.4f)!\n"
                 "   ├─ Closing %.1f%% Position: %.5f %s at Market\n"
-                "   ├─ Gross Profit:         %+$%.2f\n"
+                "   ├─ Gross Profit:         %s%.2f\n"
                 "   ├─ Estimated Fee:        -$%.2f\n"
-                "   ├─ Net Realized Profit:  %+$%.2f\n"
+                "   ├─ Net Realized Profit:  %s%.2f\n"
                 "   └─ Remaining Exposure:   %.5f %s\n"
                 + "=" * 76,
                 tp_id.upper(), sym, cur_price, tp_px,
                 close_fraction * 100.0, closed_qty, sym,
-                gross, fee, net_pnl,
+                gross_sign, abs(gross), fee, net_sign, abs(net_pnl),
                 max(0.0, remaining_qty - closed_qty), sym
             )
 
