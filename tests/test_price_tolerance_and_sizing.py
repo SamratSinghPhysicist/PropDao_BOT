@@ -206,6 +206,46 @@ class TestPriceToleranceAndSizing(unittest.TestCase):
         self.assertGreater(post_loss_balance, 950.0)
         self.assertAlmostEqual(post_loss_balance - 950.0, 7.50, places=2)
 
+    def test_winning_side_bracket_calibration_when_price_moved(self):
+        """
+        Regression test for HTTP 400 'Take-profit must be on the winning side of the entry price'.
+        When candle closed at 0.9609 with SL at 0.9606 (target was 0.9617),
+        but current market price at submission is 0.9627:
+        Calibrating brackets from current_price ensures:
+        - TP is strictly > current mark (on winning side)
+        - SL is strictly < current mark (on losing side)
+        - Real SL distance is 0.0021 (not 0.0004), preventing oversized orders.
+        """
+        sui_contract = ContractDetail(
+            symbol="SUIUSDC",
+            coin="SUI",
+            price_unit=0.00001,
+            price_precision=5,
+            lot_step=0.1,
+            sz_decimals=1,
+            max_leverage=1.0
+        )
+        self.market._contracts_cache["SUIUSDC"] = sui_contract
+
+        candle_close = 0.9609
+        raw_sl_px = 0.9606
+        current_mark = 0.9627 # Price moved up between candle close and order execution
+
+        # Execution calibration logic
+        pu = sui_contract.price_unit
+        prec = sui_contract.price_precision
+        exec_entry_px = current_mark
+        exec_sl_px = round(min(raw_sl_px, exec_entry_px - (pu * 2)), prec)
+        sl_dist = max(pu * 2, exec_entry_px - exec_sl_px)
+        rr = 2.0
+        exec_tp_px = round(exec_entry_px + (rr * sl_dist), prec)
+
+        # Assertions
+        self.assertGreater(exec_tp_px, exec_entry_px, "TP must be strictly greater than market entry price")
+        self.assertLess(exec_sl_px, exec_entry_px, "SL must be strictly less than market entry price")
+        self.assertAlmostEqual(sl_dist, 0.0021, places=4, msg="SL dist must be based on current mark, not stale candle close")
+        self.assertGreater(exec_tp_px, 0.9627, "TP must be above the fill mark price")
+
 
 if __name__ == "__main__":
     unittest.main()

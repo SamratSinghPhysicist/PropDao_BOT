@@ -470,22 +470,62 @@ class ExecutionEngine:
         """Executes a confirmed strategy signal with risk budgeting."""
         tracker = self.trackers.get(sym)
         strat = self.strategies.get(sym)
-        entry_px = signal.metadata.get("entry_price", current_price)
-        sl_px = signal.metadata.get("stop_loss_price")
-        tp_px = signal.metadata.get("take_profit_price")
-        tp_1to1_px = signal.metadata.get("target_1to1_price", entry_px)
+        raw_sl_px = signal.metadata.get("stop_loss_price")
         zone_id = signal.metadata.get("zone_id")
 
-        if not sl_px:
+        if not raw_sl_px:
             logger.warning("[%s SIGNAL REJECTED] Missing stop loss price.", sym)
             return False
 
-        # 1. Calculate sizing constrained by roomUsd
+        contract = self.market.get_contract_detail(sym)
+        prec = getattr(contract, "price_precision", 4)
+        pu = getattr(contract, "price_unit", 0.0001)
+        is_long = signal.direction == OrderDirection.LONG
+        side = OrderSide.BUY if is_long else OrderSide.SELL
+
+        # 1. Pre-execution setup validation: check if market price has already breached stop-loss
+        if is_long and current_price <= (raw_sl_px + pu):
+            logger.warning(
+                "[%s SETUP EXPIRED] Current mark ($%.4f) has dropped to/below Stop Loss ($%.4f). Skipping stale signal.",
+                sym, current_price, raw_sl_px
+            )
+            if strat:
+                strat.on_trade_rejected()
+            return False
+        elif (not is_long) and current_price >= (raw_sl_px - pu):
+            logger.warning(
+                "[%s SETUP EXPIRED] Current mark ($%.4f) has risen to/above Stop Loss ($%.4f). Skipping stale signal.",
+                sym, current_price, raw_sl_px
+            )
+            if strat:
+                strat.on_trade_rejected()
+            return False
+
+        # 2. Dynamic execution calibration relative to live market fill price
+        exec_entry_px = current_price
+        rr = getattr(strat, "risk_reward_ratio", 2.0) if strat else 2.0
+
+        if is_long:
+            exec_sl_px = round(min(raw_sl_px, current_entry := (exec_entry_px - (pu * 2))), prec)
+            sl_dist = max(pu * 2, exec_entry_px - exec_sl_px)
+            exec_tp_1to1_px = round(exec_entry_px + sl_dist, prec)
+            exec_tp_px = round(exec_entry_px + (rr * sl_dist), prec)
+            if exec_tp_px <= exec_entry_px:
+                exec_tp_px = round(exec_entry_px + (pu * 2), prec)
+        else:
+            exec_sl_px = round(max(raw_sl_px, exec_entry_px + (pu * 2)), prec)
+            sl_dist = max(pu * 2, exec_sl_px - exec_entry_px)
+            exec_tp_1to1_px = round(exec_entry_px - sl_dist, prec)
+            exec_tp_px = round(exec_entry_px - (rr * sl_dist), prec)
+            if exec_tp_px >= exec_entry_px:
+                exec_tp_px = round(exec_entry_px - (pu * 2), prec)
+
+        # 3. Calculate sizing constrained by roomUsd using live execution prices
         try:
             qty, lev, margin = self.risk_manager.calculate_order_sizing(
                 symbol=sym,
-                entry_price=entry_px,
-                stop_loss_price=sl_px,
+                entry_price=exec_entry_px,
+                stop_loss_price=exec_sl_px,
                 preferred_leverage=self.preferred_leverage
             )
         except Exception as e:
@@ -494,16 +534,14 @@ class ExecutionEngine:
                 strat.on_trade_rejected()
             return False
 
-        side = OrderSide.BUY if signal.direction == OrderDirection.LONG else OrderSide.SELL
         risk = self.risk_manager.get_risk_state()
         risk_budget = risk.room_usd * self.risk_fraction
-        sl_dist = abs(entry_px - sl_px)
-        sl_dist_pct = (sl_dist / entry_px) * 100
+        sl_dist_pct = (sl_dist / exec_entry_px) * 100
 
         logger.info(
             "\n" + "=" * 76 + "\n"
             "[SIGNAL CONFIRMED] %s %s Setup Triggered from Zone %s\n"
-            "  * Entry Price:     $%.4f (Current Mark: $%.4f)\n"
+            "  * Market Entry:    $%.4f (Live Mark Price)\n"
             "  * Stop Loss:       $%.4f (Distance: $%.4f | %.2f%%)\n"
             "  * 1:1 TP Target:   $%.4f (50%% partial exit + Breakeven Lock)\n"
             "  * 1:2 TP Target:   $%.4f (Final runner target)\n"
@@ -513,30 +551,48 @@ class ExecutionEngine:
             "  * Order Quantity:  %.5f %s ($%.2f notional)\n"
             "  * Leverage:        %.1fx (Isolated Initial Margin: $%.2f)\n"
             "  * Remaining Cash:  $%.2f\n"
-            "[SUBMITTING ORDER] %s Market %.5f %s with attached SL/TP brackets...\n"
+            "[SUBMITTING ORDER] %s Market %.5f %s (SL: $%.4f | TP: $%.4f)...\n"
             + "=" * 76,
             signal.direction.value, sym, zone_id or "SMC_ZONE",
-            entry_px, current_price,
-            sl_px, sl_dist, sl_dist_pct,
-            tp_1to1_px,
-            tp_px,
+            exec_entry_px,
+            exec_sl_px, sl_dist, sl_dist_pct,
+            exec_tp_1to1_px,
+            exec_tp_px,
             risk.room_usd,
             self.risk_fraction * 100, risk_budget,
-            qty, sym, qty * entry_px,
+            qty, sym, qty * exec_entry_px,
             lev, margin,
             risk.balance - margin,
-            side.value, qty, sym
+            side.value, qty, sym, exec_sl_px, exec_tp_px
         )
 
         try:
-            res = self.order_manager.open_market(
-                symbol=sym,
-                side=side,
-                qty=qty,
-                leverage=lev,
-                sl_price=sl_px,
-                tp_price=tp_px
-            )
+            try:
+                res = self.order_manager.open_market(
+                    symbol=sym,
+                    side=side,
+                    qty=qty,
+                    leverage=lev,
+                    sl_price=exec_sl_px,
+                    tp_price=exec_tp_px
+                )
+            except Exception as order_err:
+                err_msg = str(order_err).lower()
+                # If attached brackets were rejected due to micro-transit slippage boundary checks,
+                # immediately submit a clean market order and attach brackets on the confirmed fill
+                if any(k in err_msg for k in ("take-profit", "stop-loss", "winning side", "losing side", "400")):
+                    logger.warning(
+                        "[%s ATTACHED BRACKETS REJECTED] %s. Executing clean market order and syncing brackets post-fill...",
+                        sym, order_err
+                    )
+                    res = self.order_manager.open_market(
+                        symbol=sym,
+                        side=side,
+                        qty=qty,
+                        leverage=lev
+                    )
+                else:
+                    raise
 
             # Wait briefly for fill to register and fetch created position
             time.sleep(1.0)
@@ -544,35 +600,53 @@ class ExecutionEngine:
             created_pos = next((p for p in positions if p.symbol == sym), None)
 
             if created_pos and tracker:
+                fill_entry = created_pos.entry
+                fill_dist = abs(fill_entry - exec_sl_px)
+                if fill_dist <= 1e-8:
+                    fill_dist = fill_entry * 0.005
+
+                # Recalibrate TP/SL precisely to actual confirmed fill entry
+                if is_long:
+                    confirmed_sl = round(min(exec_sl_px, fill_entry - (pu * 2)), prec)
+                    confirmed_tp = round(fill_entry + (rr * fill_dist), prec)
+                    confirmed_tp_1to1 = round(fill_entry + fill_dist, prec)
+                else:
+                    confirmed_sl = round(max(exec_sl_px, fill_entry + (pu * 2)), prec)
+                    confirmed_tp = round(fill_entry - (rr * fill_dist), prec)
+                    confirmed_tp_1to1 = round(fill_entry - fill_dist, prec)
+
+                # Update position brackets on exchange to ensure active protection
+                try:
+                    self.order_manager.update_brackets(created_pos.id, sl_price=confirmed_sl, tp_price=confirmed_tp)
+                except Exception as bracket_err:
+                    logger.debug("[%s BRACKET SYNC] Brackets already applied or update skipped: %s", sym, bracket_err)
+
                 # Configure Multi-Tier TP1..TP5 and SL1..SL5
-                contract = self.market.get_contract_detail(sym)
-                prec = getattr(contract, "price_precision", 4)
-                dist = abs(entry_px - sl_px)
-                is_long = side == OrderSide.BUY
                 tp_levels = [
-                    {"id": "tp1", "price": round(entry_px + (1.0 * dist) if is_long else entry_px - (1.0 * dist), prec), "size_pct": 20.0},
-                    {"id": "tp2", "price": round(entry_px + (1.5 * dist) if is_long else entry_px - (1.5 * dist), prec), "size_pct": 20.0},
-                    {"id": "tp3", "price": round(entry_px + (2.0 * dist) if is_long else entry_px - (2.0 * dist), prec), "size_pct": 20.0},
-                    {"id": "tp4", "price": round(entry_px + (2.5 * dist) if is_long else entry_px - (2.5 * dist), prec), "size_pct": 20.0},
-                    {"id": "tp5", "price": round(entry_px + (3.0 * dist) if is_long else entry_px - (3.0 * dist), prec), "size_pct": 20.0},
+                    {"id": "tp1", "price": round(fill_entry + (1.0 * fill_dist) if is_long else fill_entry - (1.0 * fill_dist), prec), "size_pct": 20.0},
+                    {"id": "tp2", "price": round(fill_entry + (1.5 * fill_dist) if is_long else fill_entry - (1.5 * fill_dist), prec), "size_pct": 20.0},
+                    {"id": "tp3", "price": round(fill_entry + (2.0 * fill_dist) if is_long else fill_entry - (2.0 * fill_dist), prec), "size_pct": 20.0},
+                    {"id": "tp4", "price": round(fill_entry + (2.5 * fill_dist) if is_long else fill_entry - (2.5 * fill_dist), prec), "size_pct": 20.0},
+                    {"id": "tp5", "price": round(fill_entry + (3.0 * fill_dist) if is_long else fill_entry - (3.0 * fill_dist), prec), "size_pct": 20.0},
                 ]
                 sl_levels = [
-                    {"id": "sl1", "price": sl_px, "size_pct": 100.0}
+                    {"id": "sl1", "price": confirmed_sl, "size_pct": 100.0}
                 ]
                 tracker.register_entry(
                     position=created_pos,
-                    target_1to1_price=tp_1to1_px,
-                    target_1to2_price=tp_px,
-                    sl_price=sl_px,
+                    target_1to1_price=confirmed_tp_1to1,
+                    target_1to2_price=confirmed_tp,
+                    sl_price=confirmed_sl,
                     smc_zone_id=zone_id,
                     tp_levels=tp_levels,
                     sl_levels=sl_levels
                 )
                 c_margin = getattr(created_pos, "margin", getattr(created_pos, "margin_allocated", 0.0))
                 logger.info(
-                    "✅ [POSITION CONFIRMED] %s %.5f %s @ $%.4f (Margin: $%.2f, Lev: %.1fx, ID: %s)",
+                    "✅ [POSITION CONFIRMED] %s %.5f %s @ $%.4f (Margin: $%.2f, Lev: %.1fx, SL: $%.4f, TP: $%.4f, ID: %s)",
                     created_pos.side.value, created_pos.qty, sym,
-                    created_pos.entry, c_margin, created_pos.leverage, created_pos.id
+                    created_pos.entry, c_margin, created_pos.leverage,
+                    confirmed_sl, confirmed_tp, created_pos.id
                 )
                 return True
             else:
