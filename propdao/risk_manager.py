@@ -83,9 +83,12 @@ class PropDAORiskManager:
             logger.critical("🚨 PropDAO Account %s has breached drawdown floor! Ceasing trading.", self.account_id)
             return False
 
+        # Dynamically scale USD cutoff to account size (min_room_usd_cutoff or 0.2% of balance, min $2.00)
+        effective_min_room = min(self.min_room_usd_cutoff, max(2.0, risk.balance * 0.002))
+
         # If we have open positions and room is critically low, activate risk guard
         if risk.open_positions > 0:
-            if risk.room_pct < self.min_room_pct_cutoff or risk.room_usd < self.min_room_usd_cutoff:
+            if risk.room_pct < self.min_room_pct_cutoff or risk.room_usd < effective_min_room:
                 logger.warning(
                     "⚠️ Risk Guard Triggered! Room thin (roomUsd: $%.2f, roomPct: %.2f%%). Flattening positions...",
                     risk.room_usd, risk.room_pct
@@ -94,8 +97,8 @@ class PropDAORiskManager:
                 self.client.close_all(self.account_id)
                 return False
 
-        if risk.room_usd < self.min_room_usd_cutoff:
-            logger.warning("Room USD $%.2f is below minimum $%.2f. Entries blocked.", risk.room_usd, self.min_room_usd_cutoff)
+        if risk.room_usd < effective_min_room:
+            logger.warning("Room USD $%.2f is below minimum $%.2f. Entries blocked.", risk.room_usd, effective_min_room)
             return False
 
         return True

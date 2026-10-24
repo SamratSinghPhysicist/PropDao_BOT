@@ -145,6 +145,67 @@ class TestPriceToleranceAndSizing(unittest.TestCase):
         bars_since_retest = eval_idx - zone.retest_bar_idx
         self.assertIn(bars_since_retest, (0, 1, 2), "Bar 22 is within the multi-bar confirmation window")
 
+    def test_one_thousand_dollar_funded_account_scenario(self):
+        """
+        Tests the user's specific scenario:
+        - $1,000 account, $950 max floor, current balance $960 ($10 roomUsd).
+        - Verifies that order sizing dynamically scales to the $10 room buffer,
+          never risking more than $2.50 (25% risk fraction), ensuring the account
+          cannot be blown on a loss.
+        """
+        near_contract = ContractDetail(
+            symbol="NEARUSDC",
+            coin="NEAR",
+            price_unit=0.0001,
+            price_precision=4,
+            lot_step=0.1,
+            sz_decimals=1,
+            max_leverage=2.0
+        )
+        self.market._contracts_cache["NEARUSDC"] = near_contract
+
+        self.mock_client.get_risk.return_value = {
+            "equity": 960.0,
+            "balance": 960.0,
+            "floor": 950.0,
+            "floorKind": "max",
+            "maxFloor": 950.0,
+            "dailyFloor": 940.0,
+            "roomUsd": 10.0,
+            "roomPct": 1.04,
+            "breached": False,
+            "openPositions": 0
+        }
+        risk_mgr = PropDAORiskManager(
+            client=self.mock_client,
+            market=self.market,
+            account_id="PROP-1K",
+            risk_fraction_per_trade=0.25
+        )
+
+        # 1. Verify safety check permits trading
+        self.assertTrue(risk_mgr.check_safety_and_guard())
+
+        # 2. Size a NEAR trade: Entry = $4.6500, SL = $4.6000 (dist = $0.0500)
+        # Risk budget = $10.00 * 0.25 = $2.50
+        # Expected qty = $2.50 / $0.0500 = 50.0 NEAR
+        qty, lev, margin = risk_mgr.calculate_order_sizing(
+            symbol="NEARUSDC",
+            entry_price=4.6500,
+            stop_loss_price=4.6000,
+            preferred_leverage=2.0
+        )
+        self.assertAlmostEqual(qty, 50.0, places=1)
+        
+        # 3. Verify maximum loss if SL is hit
+        max_loss = qty * abs(4.6500 - 4.6000)
+        self.assertAlmostEqual(max_loss, 2.50, places=2)
+        
+        # 4. Balance after full stop hit: $960 - $2.50 = $957.50 (> $950 floor)
+        post_loss_balance = 960.0 - max_loss
+        self.assertGreater(post_loss_balance, 950.0)
+        self.assertAlmostEqual(post_loss_balance - 950.0, 7.50, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
