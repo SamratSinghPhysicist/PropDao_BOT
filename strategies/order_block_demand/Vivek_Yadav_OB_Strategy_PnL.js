@@ -137,15 +137,32 @@ return {
 
         if (cur.close < ob.bottom) {
           ob.active = false;
-        } else if (cur.low <= ob.top && cur.high >= ob.bottom) {
-          if (isGreen(i) && cur.close > ob.bottom) {
+        } else if (!ob.retestIdx) {
+          // Condition 1: Candle touches OB from above and closes with rejection wick
+          if (cur.low <= ob.top && cur.high >= ob.bottom) {
+            const lowerWick = Math.min(cur.open, cur.close) - cur.low;
+            if (cur.close >= ob.bottom && lowerWick > 0) {
+              ob.retestIdx = i;
+              ob.retestLow = cur.low;
+            }
+          }
+        } else if (ob.retestIdx) {
+          // Condition 2: The very next (just adjacent) candle must get green and close
+          if (i === ob.retestIdx + 1) {
+            if (isGreen(i) && cur.close >= ob.bottom) {
+              ob.active = false;
+              const entry = cur.close;
+              const sl = Math.min(ob.bottom, ob.retestLow || ob.bottom);
+              const tp = entry + 2.0 * (entry - sl);
+              const trade = { type: 'long', startIdx: i, endIdx: i, entry, sl, tp, active: true };
+              activeTrades.push(trade);
+              drawnTrades.push(trade);
+            } else {
+              // Confirmation failed to close green -> reject OB
+              ob.active = false;
+            }
+          } else {
             ob.active = false;
-            const entry = cur.close;
-            const sl = ob.bottom;
-            const tp = entry + 2.0 * (entry - sl);
-            const trade = { type: 'long', startIdx: i, endIdx: i, entry, sl, tp, active: true };
-            activeTrades.push(trade);
-            drawnTrades.push(trade);
           }
         }
       }
@@ -157,15 +174,32 @@ return {
 
         if (cur.close > ob.top) {
           ob.active = false;
-        } else if (cur.high >= ob.bottom && cur.low <= ob.top) {
-          if (isRed(i) && cur.close < ob.top) {
+        } else if (!ob.retestIdx) {
+          // Condition 1: Candle touches OB from below and closes with rejection wick
+          if (cur.high >= ob.bottom && cur.low <= ob.top) {
+            const upperWick = cur.high - Math.max(cur.open, cur.close);
+            if (cur.close <= ob.top && upperWick > 0) {
+              ob.retestIdx = i;
+              ob.retestHigh = cur.high;
+            }
+          }
+        } else if (ob.retestIdx) {
+          // Condition 2: The very next (just adjacent) candle must get red and close
+          if (i === ob.retestIdx + 1) {
+            if (isRed(i) && cur.close <= ob.top) {
+              ob.active = false;
+              const entry = cur.close;
+              const sl = Math.max(ob.top, ob.retestHigh || ob.top);
+              const tp = entry - 2.0 * (sl - entry);
+              const trade = { type: 'short', startIdx: i, endIdx: i, entry, sl, tp, active: true };
+              activeTrades.push(trade);
+              drawnTrades.push(trade);
+            } else {
+              // Confirmation failed to close red -> reject OB
+              ob.active = false;
+            }
+          } else {
             ob.active = false;
-            const entry = cur.close;
-            const sl = ob.top;
-            const tp = entry - 2.0 * (sl - entry);
-            const trade = { type: 'short', startIdx: i, endIdx: i, entry, sl, tp, active: true };
-            activeTrades.push(trade);
-            drawnTrades.push(trade);
           }
         }
       }

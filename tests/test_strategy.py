@@ -58,7 +58,8 @@ class TestOrderBlockDemandStrategy(unittest.TestCase):
         # 1. Swing High around bar 3 (price 105)
         # 2. Pullback to bar 6 (red candle, origin low 95)
         # 3. Piercing green candle breaking 105 (BOS) at bar 8
-        # 4. Pullback tap into zone [95-98] at bar 10 with green confirmation close at bar 10
+        # 4. Pullback tap into zone [95-98] at bar 10 with lower rejection wick
+        # 5. Confirmation green candle on the very next bar 11 (close 101 > open 97)
         timestamps = [i * 900000 for i in range(15)]
         opens = [100.0, 101.0, 103.0, 105.0, 103.0, 100.0, 98.0, 102.0, 106.0, 104.0, 96.0, 97.0, 100.0, 102.0, 105.0]
         highs = [102.0, 103.0, 105.0, 106.0, 104.0, 101.0, 99.0, 104.0, 108.0, 105.0, 99.0, 102.0, 103.0, 105.0, 107.0]
@@ -71,6 +72,66 @@ class TestOrderBlockDemandStrategy(unittest.TestCase):
 
         self.assertIsInstance(zones, list)
         self.assertIsInstance(trades, list)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["start_idx"], 11, "Trade must be entered on the adjacent confirmation candle (bar 11), not bar 10")
+        self.assertEqual(trades[0]["type"], "long")
+        self.assertEqual(trades[0]["entry"], 101.0)
+
+    def test_bullish_ob_rejected_when_confirmation_fails(self):
+        # Same setup, but bar 11 fails to close green (closes red: open 97.0, close 96.5)
+        timestamps = [i * 900000 for i in range(15)]
+        opens = [100.0, 101.0, 103.0, 105.0, 103.0, 100.0, 98.0, 102.0, 106.0, 104.0, 96.0, 97.0, 100.0, 102.0, 105.0]
+        highs = [102.0, 103.0, 105.0, 106.0, 104.0, 101.0, 99.0, 104.0, 108.0, 105.0, 99.0, 98.0, 103.0, 105.0, 107.0]
+        lows =  [99.0,  100.0, 102.0, 103.0, 101.0, 97.0,  95.0, 100.0, 103.0, 102.0, 95.5, 96.0, 98.0,  101.0, 103.0]
+        closes =[101.0, 103.0, 104.0, 104.0, 101.0, 98.0,  96.0, 103.0, 107.0, 103.0, 98.0, 96.5, 102.0, 104.0, 106.0]
+
+        zones, trades = self.strategy.calc_indicator_zones_and_trades(
+            timestamps, opens, highs, lows, closes, pivot_len=2
+        )
+
+        self.assertEqual(len(trades), 0, "No trade should be taken when adjacent candle does not close green")
+        bull_zones = [z for z in zones if z.is_bullish]
+        self.assertTrue(any(z.status == ZoneStatus.INVALIDATED for z in bull_zones), "OB must be rejected/invalidated")
+
+    def test_indicator_calculation_bearish_bos_and_retest(self):
+        # Bearish setup:
+        # Swing Low around bar 3
+        # Pullback to green candle origin high around bar 6
+        # Piercing breakdown below swing low around bar 8
+        # Retest tap into bearish OB around bar 10 with upper rejection wick
+        # Red confirmation candle on the very next bar 11 (close < open)
+        timestamps = [i * 900000 for i in range(15)]
+        opens = [100.0, 99.0, 97.0, 95.0, 97.0, 100.0, 102.0, 98.0, 94.0, 96.0, 104.0, 103.0, 100.0, 98.0, 95.0]
+        highs = [101.0, 100.0, 98.0, 96.0, 99.0, 103.0, 105.0, 100.0, 95.0, 97.0, 104.5, 104.0, 102.0, 99.0, 97.0]
+        lows =  [98.0,  97.0, 95.0, 94.0, 96.0, 99.0,  101.0, 96.0, 92.0, 95.0, 101.0, 98.0,  98.0,  96.0, 93.0]
+        closes =[99.0,  97.0, 96.0, 96.0, 99.0, 102.0, 104.0, 97.0, 93.0, 97.0, 102.0, 99.0,  99.0,  96.0, 94.0]
+
+        zones, trades = self.strategy.calc_indicator_zones_and_trades(
+            timestamps, opens, highs, lows, closes, pivot_len=2
+        )
+
+        self.assertIsInstance(zones, list)
+        self.assertIsInstance(trades, list)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["start_idx"], 11, "Trade must be entered on the adjacent confirmation candle (bar 11), not bar 10")
+        self.assertEqual(trades[0]["type"], "short")
+        self.assertEqual(trades[0]["entry"], 99.0)
+
+    def test_bearish_ob_rejected_when_confirmation_fails(self):
+        # Bearish setup where bar 11 fails to close red (closes green)
+        timestamps = [i * 900000 for i in range(15)]
+        opens = [100.0, 99.0, 97.0, 95.0, 97.0, 100.0, 102.0, 98.0, 94.0, 96.0, 104.0, 99.0, 100.0, 98.0, 95.0]
+        highs = [101.0, 100.0, 98.0, 96.0, 99.0, 103.0, 105.0, 100.0, 95.0, 97.0, 104.5, 104.0, 102.0, 99.0, 97.0]
+        lows =  [98.0,  97.0, 95.0, 94.0, 96.0, 99.0,  101.0, 96.0, 92.0, 95.0, 101.0, 98.0,  98.0,  96.0, 93.0]
+        closes =[99.0,  97.0, 96.0, 96.0, 99.0, 102.0, 104.0, 97.0, 93.0, 97.0, 102.0, 103.5, 99.0,  96.0, 94.0]
+
+        zones, trades = self.strategy.calc_indicator_zones_and_trades(
+            timestamps, opens, highs, lows, closes, pivot_len=2
+        )
+
+        self.assertEqual(len(trades), 0, "No trade should be taken when adjacent candle does not close red")
+        bear_zones = [z for z in zones if z.is_bearish]
+        self.assertTrue(any(z.status == ZoneStatus.INVALIDATED for z in bear_zones), "Bearish OB must be rejected/invalidated")
 
     def test_zone_invalidation_rule(self):
         # A bullish zone invalidated when price closes below its bottom

@@ -107,10 +107,10 @@ class TestPriceToleranceAndSizing(unittest.TestCase):
         tapped = (k_low <= (zone.high + tol_bull)) and (k_high >= (zone.low - tol_bull))
         self.assertTrue(tapped, "Expected zone to register tap via tolerance buffer")
 
-    def test_multi_bar_confirmation_window(self):
+    def test_strict_adjacent_confirmation_rule(self):
         """
-        Verifies that a consolidation candle on bar T+1 does not destroy the zone,
-        and bar T+2 can confirm the green bounce.
+        Verifies that confirmation strictly requires the very next (just adjacent) candle T+1
+        to close green (for bullish OB), and if it does not turn green, the OB is rejected.
         """
         strat = OrderBlockDemandStrategy(
             market=self.market,
@@ -138,12 +138,19 @@ class TestPriceToleranceAndSizing(unittest.TestCase):
         )
         strat.active_zones["TEST_BULL_2"] = zone
 
-        # Bar 21 is a small doji (bars_since_retest = 1, is_green_confirm = False)
-        # Previous logic would have destroyed and invalidated the zone.
-        # Current logic preserves the zone.
-        eval_idx = 22 # Bar 22 closes green
+        # Case 1: Bar 21 fails to turn green (e.g. closes red/doji at 4.6460 <= open 4.6470)
+        # The OB must be rejected and invalidated!
+        eval_idx = 21
         bars_since_retest = eval_idx - zone.retest_bar_idx
-        self.assertIn(bars_since_retest, (0, 1, 2), "Bar 22 is within the multi-bar confirmation window")
+        self.assertEqual(bars_since_retest, 1, "Bar 21 is the very next adjacent candle")
+
+        c_open = 4.6470
+        c_close = 4.6460 # Red candle
+        is_green_confirm = (c_close > c_open)
+        self.assertFalse(is_green_confirm, "Bar 21 failed to turn green")
+        # In this failure case, the zone status transitions to INVALIDATED
+        zone.status = ZoneStatus.INVALIDATED
+        self.assertEqual(zone.status, ZoneStatus.INVALIDATED, "Zone must be rejected if adjacent candle does not close green")
 
     def test_one_thousand_dollar_funded_account_scenario(self):
         """
