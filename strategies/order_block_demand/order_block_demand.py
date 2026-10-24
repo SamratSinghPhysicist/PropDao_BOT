@@ -188,13 +188,13 @@ class OrderBlockDemandStrategy(BaseStrategy):
         self,
         market: KCEXMarket,
         symbol: str,
-        interval: str = "Min1",
+        interval: str = "1m",
         pivot_len: int = 3,
         swing_left_bars: int = 3,
         swing_right_bars: int = 3,
         min_impulse_candles: int = 2,
         max_impulse_candles: int = 5,
-        min_rejection_wick_ratio: float = 0.15,
+        min_rejection_wick_ratio: float = 0.0,
         risk_reward_ratio: float = 2.0,
         buffer_ticks: int = 0,
         min_sl_ticks: int = 1,
@@ -214,8 +214,11 @@ class OrderBlockDemandStrategy(BaseStrategy):
         self.market = market
         self.symbol = symbol.upper()
         try:
-            from kcex.market import normalize_kcex_interval
-            self.interval = normalize_kcex_interval(interval)
+            if hasattr(self.market, "normalize_interval"):
+                self.interval = self.market.normalize_interval(interval)
+            else:
+                from kcex.market import normalize_kcex_interval
+                self.interval = normalize_kcex_interval(interval)
         except Exception:
             self.interval = interval
         self.pivot_len = pivot_len
@@ -523,10 +526,12 @@ class OrderBlockDemandStrategy(BaseStrategy):
                 if ob.bos_bar_idx is not None and i <= ob.bos_bar_idx:
                     continue
 
-                if cur_close < ob.low:
+                # Price tolerance buffer to capture micro-rounding zone taps
+                tol_bull = max(self._price_unit * 1.5, ob.high * 0.0005)
+                if cur_close < (ob.low - tol_bull):
                     ob.status = ZoneStatus.INVALIDATED
-                elif cur_low <= ob.high and cur_high >= ob.low:
-                    if is_green(i) and cur_close > ob.low:
+                elif cur_low <= (ob.high + tol_bull) and cur_high >= (ob.low - tol_bull):
+                    if is_green(i) and cur_close > (ob.low - tol_bull):
                         ob.status = ZoneStatus.MITIGATED
                         entry = cur_close
                         sl = ob.low
@@ -565,10 +570,12 @@ class OrderBlockDemandStrategy(BaseStrategy):
                 if ob.bos_bar_idx is not None and i <= ob.bos_bar_idx:
                     continue
 
-                if cur_close > ob.high:
+                # Price tolerance buffer to capture micro-rounding zone taps
+                tol_bear = max(self._price_unit * 1.5, ob.low * 0.0005)
+                if cur_close > (ob.high + tol_bear):
                     ob.status = ZoneStatus.INVALIDATED
-                elif cur_high >= ob.low and cur_low <= ob.high:
-                    if is_red(i) and cur_close < ob.high:
+                elif cur_high >= (ob.low - tol_bear) and cur_low <= (ob.high + tol_bear):
+                    if is_red(i) and cur_close < (ob.high + tol_bear):
                         ob.status = ZoneStatus.MITIGATED
                         entry = cur_close
                         sl = ob.high
@@ -941,8 +948,8 @@ class OrderBlockDemandStrategy(BaseStrategy):
             if z.status in (ZoneStatus.INVALIDATED, ZoneStatus.EXPIRED):
                 self._mark_resolved(z.creation_ts)
             elif z.status == ZoneStatus.MITIGATED:
-                # Historical mitigations (prior to eval_idx) are marked resolved
-                if z.end_idx is not None and z.end_idx < eval_idx:
+                # Historical mitigations (prior to eval_idx - 1) are marked resolved
+                if z.end_idx is not None and z.end_idx < (eval_idx - 1):
                     self._mark_resolved(z.creation_ts)
 
         # 2. Prune existing active zones that have been resolved, invalidated, mitigated, or expired
@@ -989,10 +996,10 @@ class OrderBlockDemandStrategy(BaseStrategy):
                 if not any(az.creation_ts == z.creation_ts for az in self.active_zones.values()):
                     self.active_zones[z.zone_id] = z
 
-        # 2. Check for newly triggered trades on eval_idx from indicator calculation
+        # 2. Check for newly triggered trades on eval_idx or (eval_idx - 1) from indicator calculation
         candidate_trade = None
         for t in drawn_trades:
-            if t.get("start_idx") == eval_idx:
+            if t.get("start_idx") in (eval_idx, eval_idx - 1):
                 t_zone = t.get("zone")
                 if not t_zone:
                     continue
@@ -1098,8 +1105,9 @@ class OrderBlockDemandStrategy(BaseStrategy):
                     continue
 
                 if zone.is_bullish:
-                    # Invalidation check
-                    if c_close < zone.low:
+                    tol_bull = max(pu * 1.5, zone.high * 0.0005)
+                    # Invalidation check: blowout below low
+                    if c_close < (zone.low - tol_bull):
                         zone.status = ZoneStatus.INVALIDATED
                         self._mark_resolved(zone.creation_ts)
                         self.history_zones.append(zone)
@@ -1118,21 +1126,22 @@ class OrderBlockDemandStrategy(BaseStrategy):
                             k_low = lows[bar_k]
                             k_close = closes[bar_k]
                             k_range = max(1e-12, k_high - k_low)
-                            tapped = (k_low <= zone.high) and (k_high >= zone.low)
-                            if tapped and k_close >= zone.low:
+                            tapped = (k_low <= (zone.high + tol_bull)) and (k_high >= (zone.low - tol_bull))
+                            if tapped and k_close >= (zone.low - tol_bull):
                                 lower_wick = min(k_open, k_close) - k_low
-                                if (lower_wick / k_range) >= self.min_rejection_wick_ratio:
+                                # Accept tap if wick condition met OR if candle closed green off the zone
+                                if (self.min_rejection_wick_ratio <= 0.0) or ((lower_wick / k_range) >= self.min_rejection_wick_ratio) or (k_close > k_open):
                                     zone.status = ZoneStatus.TESTED
                                     zone.retest_bar_idx = bar_k
                                     zone.retest_wick_price = k_low
                                     break
 
-                    # Confirmation check (Must confirm on the very next candle T+1)
+                    # Confirmation check (Allows confirmation across 0 to 2 bars)
                     if zone.status == ZoneStatus.TESTED and zone.retest_bar_idx is not None:
-                        is_green_confirm = (c_close > c_open) and (c_close >= zone.low)
+                        is_green_confirm = (c_close > c_open) and (c_close >= (zone.low - tol_bull))
                         bars_since_retest = eval_idx - zone.retest_bar_idx
 
-                        if bars_since_retest in (0, 1) and is_green_confirm:
+                        if bars_since_retest in (0, 1, 2) and is_green_confirm:
                             wick_low = zone.retest_wick_price if zone.retest_wick_price is not None else zone.low
                             sl_price = round(min(zone.low, wick_low) - (self.buffer_ticks * pu), prec)
                             risk_dist = c_close - sl_price
@@ -1162,21 +1171,16 @@ class OrderBlockDemandStrategy(BaseStrategy):
                             )
                             best_zone_id = zid
                             break
-                        elif bars_since_retest >= 1 and not is_green_confirm:
-                            # Confirmation candle failed to close green on next bar -> INVALIDATE
-                            zone.status = ZoneStatus.INVALIDATED
-                            self._mark_resolved(zone.creation_ts)
-                            self.history_zones.append(zone)
-                            del self.active_zones[zid]
-                            logger.info(
-                                "[ZONE INVALIDATED] Bullish zone %s [%s - %s] invalidated: confirmation candle failed to close green on bar %d.",
-                                zid, zone.low, zone.high, eval_idx
-                            )
-                            continue
+                        elif bars_since_retest > 2 and not is_green_confirm:
+                            # If not confirmed after 2 bars, re-arm zone back to ACTIVE for next tap instead of destroying
+                            zone.status = ZoneStatus.ACTIVE
+                            zone.retest_bar_idx = None
+                            zone.retest_wick_price = None
 
                 elif zone.is_bearish:
-                    # Invalidation check (blowout above high)
-                    if c_close > zone.high:
+                    tol_bear = max(pu * 1.5, zone.low * 0.0005)
+                    # Invalidation check: blowout above high
+                    if c_close > (zone.high + tol_bear):
                         zone.status = ZoneStatus.INVALIDATED
                         self._mark_resolved(zone.creation_ts)
                         self.history_zones.append(zone)
@@ -1195,21 +1199,22 @@ class OrderBlockDemandStrategy(BaseStrategy):
                             k_low = lows[bar_k]
                             k_close = closes[bar_k]
                             k_range = max(1e-12, k_high - k_low)
-                            tapped = (k_high >= zone.low) and (k_low <= zone.high)
-                            if tapped and k_close <= zone.high:
+                            tapped = (k_high >= (zone.low - tol_bear)) and (k_low <= (zone.high + tol_bear))
+                            if tapped and k_close <= (zone.high + tol_bear):
                                 upper_wick = k_high - max(k_open, k_close)
-                                if (upper_wick / k_range) >= self.min_rejection_wick_ratio:
+                                # Accept tap if wick condition met OR if candle closed red off the zone
+                                if (self.min_rejection_wick_ratio <= 0.0) or ((upper_wick / k_range) >= self.min_rejection_wick_ratio) or (k_close < k_open):
                                     zone.status = ZoneStatus.TESTED
                                     zone.retest_bar_idx = bar_k
                                     zone.retest_wick_price = k_high
                                     break
 
-                    # Confirmation check (Must confirm on the very next candle T+1)
+                    # Confirmation check (Allows confirmation across 0 to 2 bars)
                     if zone.status == ZoneStatus.TESTED and zone.retest_bar_idx is not None:
-                        is_red_confirm = (c_close < c_open) and (c_close <= zone.high)
+                        is_red_confirm = (c_close < c_open) and (c_close <= (zone.high + tol_bear))
                         bars_since_retest = eval_idx - zone.retest_bar_idx
 
-                        if bars_since_retest in (0, 1) and is_red_confirm:
+                        if bars_since_retest in (0, 1, 2) and is_red_confirm:
                             wick_high = zone.retest_wick_price if zone.retest_wick_price is not None else zone.high
                             sl_price = round(max(zone.high, wick_high) + (self.buffer_ticks * pu), prec)
                             risk_dist = sl_price - c_close
@@ -1239,17 +1244,11 @@ class OrderBlockDemandStrategy(BaseStrategy):
                             )
                             best_zone_id = zid
                             break
-                        elif bars_since_retest >= 1 and not is_red_confirm:
-                            # Confirmation candle failed to close red on next bar -> INVALIDATE
-                            zone.status = ZoneStatus.INVALIDATED
-                            self._mark_resolved(zone.creation_ts)
-                            self.history_zones.append(zone)
-                            del self.active_zones[zid]
-                            logger.info(
-                                "[ZONE INVALIDATED] Bearish zone %s [%s - %s] invalidated: confirmation candle failed to close red on bar %d.",
-                                zid, zone.low, zone.high, eval_idx
-                            )
-                            continue
+                        elif bars_since_retest > 2 and not is_red_confirm:
+                            # If not confirmed after 2 bars, re-arm zone back to ACTIVE for next tap instead of destroying
+                            zone.status = ZoneStatus.ACTIVE
+                            zone.retest_bar_idx = None
+                            zone.retest_wick_price = None
 
         if best_signal is not None:
             self.last_signal_candle_ts = current_candle_ts

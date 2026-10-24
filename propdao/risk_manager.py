@@ -135,16 +135,18 @@ class PropDAORiskManager:
 
         # Round to lotStep
         lot_step = contract.lot_step
-        sz_dec = contract.sz_decimals or 4
+        sz_dec = contract.sz_decimals if contract.sz_decimals is not None else 4
         if lot_step > 0:
             stepped_qty = round(round(raw_qty / lot_step, 6)) * lot_step
         else:
             stepped_qty = raw_qty
 
         qty = round(stepped_qty, sz_dec)
+        if sz_dec == 0:
+            qty = float(int(qty))
 
         if qty <= 0:
-            qty = lot_step
+            qty = float(int(lot_step)) if sz_dec == 0 else lot_step
 
         notional = qty * entry_price
         margin_required = notional / leverage
@@ -155,6 +157,8 @@ class PropDAORiskManager:
             max_notional = risk.balance * 0.90 * leverage
             qty = math.floor((max_notional / entry_price) / lot_step) * lot_step
             qty = round(qty, sz_dec)
+            if sz_dec == 0:
+                qty = float(int(qty))
             notional = qty * entry_price
             margin_required = notional / leverage
 

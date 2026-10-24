@@ -63,6 +63,10 @@ class PropDAOMarket:
 
         return self._live_prices_cache
 
+    def get_live_prices(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Alias for refresh_live_prices."""
+        return self.refresh_live_prices(force=force)
+
     def refresh_markets(self, force: bool = False) -> None:
         """Loads and caches market information from GET /markets."""
         now = time.time()
@@ -75,6 +79,9 @@ class PropDAOMarket:
             maker_fee = float(fees.get("maker", 0.00015))
             taker_fee = float(fees.get("taker", 0.00045))
 
+            # Ensure live prices are populated to derive exact exchange precision
+            live_mkts = self.refresh_live_prices()
+
             for m in res.get("data", []):
                 sym = m.get("symbol", "").upper()
                 coin = m.get("coin", sym.replace("USDC", "").replace("USDT", ""))
@@ -82,10 +89,28 @@ class PropDAOMarket:
                 lot_step = float(m.get("lotStep", 0.001))
                 sz_dec = int(m.get("szDecimals", 3))
 
-                # Compute price unit & precision from lot step / szDecimals / typical tick
-                # Default tick size for BTC is 0.1 or 0.01; ETH is 0.01, etc.
-                price_unit = 0.1 if "BTC" in sym else (0.01 if "ETH" in sym else 0.001)
-                prec = 1 if "BTC" in sym else (2 if "ETH" in sym else 4)
+                # Compute price unit & precision dynamically from exchange live mark/oracle price
+                live_info = live_mkts.get(sym, {})
+                px_val = float(live_info.get("price", 0.0) or live_info.get("oraclePrice", 0.0))
+                if px_val > 0:
+                    s_px = f"{px_val:.8f}".rstrip("0")
+                    prec = len(s_px.split(".")[1]) if "." in s_px else 1
+                    prec = max(1, min(prec, 6))
+                    price_unit = round(10 ** (-prec), prec)
+                else:
+                    # Robust symbol fallbacks based on PropDAO price scales
+                    if "BTC" in sym or "GOLD" in sym or "TSLA" in sym:
+                        price_unit, prec = 0.1, 1
+                    elif any(k in sym for k in ("ETH", "SOL", "SPCX", "GOOGL")):
+                        price_unit, prec = 0.01, 2
+                    elif "SILVER" in sym:
+                        price_unit, prec = 0.001, 3
+                    elif "SUI" in sym:
+                        price_unit, prec = 0.00001, 5
+                    elif "XRP" in sym:
+                        price_unit, prec = 0.000001, 6
+                    else:
+                        price_unit, prec = 0.0001, 4
 
                 contract = ContractDetail(
                     symbol=sym,
@@ -112,12 +137,30 @@ class PropDAOMarket:
         if sym in self._contracts_cache:
             return self._contracts_cache[sym]
 
+        if not self._contracts_cache:
+            self.refresh_markets(force=True)
+            if sym in self._contracts_cache:
+                return self._contracts_cache[sym]
+
         # Sane default based on coin type
         coin = sym.replace("USDC", "").replace("USDT", "")
-        max_lev = 2.0 if coin in ("BTC", "ETH", "SOL") else 1.0
-        lot_step = 0.00001 if coin == "BTC" else (0.001 if coin in ("ETH", "SOL") else 0.1)
-        prec = 1 if coin == "BTC" else (2 if coin in ("ETH", "SOL") else 4)
-        pu = 0.1 if coin == "BTC" else (0.01 if coin in ("ETH", "SOL") else 0.0001)
+        max_lev = 2.0 if coin in ("BTC", "ETH", "SOL", "GOLD", "SILVER", "TSLA", "SPCX", "GOOGL", "XRP") else 1.0
+        if "BTC" in sym:
+            lot_step, sz_dec, prec, pu = 0.00001, 5, 1, 0.1
+        elif "ETH" in sym or "GOLD" in sym:
+            lot_step, sz_dec, prec, pu = 0.0001, 4, (1 if "GOLD" in sym else 2), (0.1 if "GOLD" in sym else 0.01)
+        elif "TSLA" in sym or "GOOGL" in sym:
+            lot_step, sz_dec, prec, pu = 0.001, 3, (1 if "TSLA" in sym else 2), (0.1 if "TSLA" in sym else 0.01)
+        elif any(k in sym for k in ("SOL", "SPCX", "SILVER")):
+            lot_step, sz_dec, prec, pu = 0.01, 2, (3 if "SILVER" in sym else 2), (0.001 if "SILVER" in sym else 0.01)
+        elif "XRP" in sym:
+            lot_step, sz_dec, prec, pu = 1.0, 0, 6, 0.000001
+        elif "SUI" in sym:
+            lot_step, sz_dec, prec, pu = 0.1, 1, 5, 0.00001
+        elif any(k in sym for k in ("NEAR", "TRUMP")):
+            lot_step, sz_dec, prec, pu = 0.1, 1, 4, 0.0001
+        else:
+            lot_step, sz_dec, prec, pu = 0.1, 1, 4, 0.0001
 
         detail = ContractDetail(
             symbol=sym,
@@ -125,7 +168,7 @@ class PropDAOMarket:
             price_unit=pu,
             price_precision=prec,
             lot_step=lot_step,
-            sz_decimals=len(str(lot_step).split(".")[-1]) if "." in str(lot_step) else 0,
+            sz_decimals=sz_dec,
             max_leverage=max_lev
         )
         self._contracts_cache[sym] = detail
@@ -158,23 +201,23 @@ class PropDAOMarket:
         return s
 
     def normalize_interval(self, interval: str) -> str:
-        """Normalizes timeframes like '15m', 'Min15', '1h', etc. to standard format."""
-        s = str(interval).lower().replace("min", "m")
-        if s in ("1", "1m", "min1"):
+        """Normalizes timeframes like '1m', 'Min1', 'min1', '15m', 'Min15', '4h', etc. to standard format."""
+        s = str(interval).strip().lower()
+        if s in ("1", "1m", "m1", "min1", "1min"):
             return "1m"
-        elif s in ("3", "3m", "min3"):
+        elif s in ("3", "3m", "m3", "min3", "3min"):
             return "3m"
-        elif s in ("5", "5m", "min5"):
+        elif s in ("5", "5m", "m5", "min5", "5min"):
             return "5m"
-        elif s in ("15", "15m", "min15"):
+        elif s in ("15", "15m", "m15", "min15", "15min"):
             return "15m"
-        elif s in ("30", "30m", "min30"):
+        elif s in ("30", "30m", "m30", "min30", "30min"):
             return "30m"
-        elif s in ("60", "1h", "min60", "hour1"):
+        elif s in ("60", "60m", "m60", "1h", "h1", "hour1", "60min"):
             return "1h"
-        elif s in ("240", "4h", "hour4"):
+        elif s in ("240", "240m", "m240", "4h", "h4", "hour4", "240min"):
             return "4h"
-        elif s in ("1d", "day1", "d"):
+        elif s in ("1d", "d", "d1", "day1"):
             return "1d"
         return s
 

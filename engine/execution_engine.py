@@ -292,11 +292,11 @@ class ExecutionEngine:
             else:
                 if tracker and tracker.has_open_position:
                     logger.info("[%s POSITION CLOSED] Position cleared from exchange. Registering trade close...", sym)
-                    tracker.register_final_exit(exit_price=cur_price, reason="Exit Filled")
-                    try:
-                        self.order_manager.cancel_all_orders()
-                    except Exception:
-                        pass
+                    trade_record = tracker.register_final_exit(exit_price=cur_price, reason="Exit Filled")
+                    strat = self.strategies.get(sym)
+                    if strat and hasattr(strat, "on_trade_closed"):
+                        realized = getattr(trade_record, "realized_pnl", 0.0) if trade_record else 0.0
+                        strat.on_trade_closed(pnl=realized, exit_price=cur_price)
 
         # 4. Structured Heartbeat Log
         self._log_heartbeat(pos_by_sym)
@@ -391,14 +391,16 @@ class ExecutionEngine:
 
         if not tracker.has_open_position:
             # Sync existing position into tracker
+            contract = self.market.get_contract_detail(sym)
+            prec = getattr(contract, "price_precision", 4)
             sl_px = pos.sl_price or (pos.entry * 0.98 if pos.side == OrderSide.BUY else pos.entry * 1.02)
             dist = abs(pos.entry - sl_px)
-            tp_1to1 = pos.entry + dist if pos.side == OrderSide.BUY else pos.entry - dist
-            tp_1to2 = pos.entry + (2.0 * dist) if pos.side == OrderSide.BUY else pos.entry - (2.0 * dist)
+            tp_1to1 = round(pos.entry + dist if pos.side == OrderSide.BUY else pos.entry - dist, prec)
+            tp_1to2 = round(pos.entry + (2.0 * dist) if pos.side == OrderSide.BUY else pos.entry - (2.0 * dist), prec)
             is_long = pos.side == OrderSide.BUY
             default_tps = [
-                {"id": "tp1", "price": round(pos.entry + (1.0 * dist) if is_long else pos.entry - (1.0 * dist), 4), "size_pct": 50.0},
-                {"id": "tp2", "price": round(pos.entry + (2.0 * dist) if is_long else pos.entry - (2.0 * dist), 4), "size_pct": 50.0}
+                {"id": "tp1", "price": round(pos.entry + (1.0 * dist) if is_long else pos.entry - (1.0 * dist), prec), "size_pct": 50.0},
+                {"id": "tp2", "price": round(pos.entry + (2.0 * dist) if is_long else pos.entry - (2.0 * dist), prec), "size_pct": 50.0}
             ]
             tracker.register_entry(pos, target_1to1_price=tp_1to1, target_1to2_price=tp_1to2, sl_price=sl_px, tp_levels=default_tps)
 
@@ -537,14 +539,16 @@ class ExecutionEngine:
 
             if created_pos and tracker:
                 # Configure Multi-Tier TP1..TP5 and SL1..SL5
+                contract = self.market.get_contract_detail(sym)
+                prec = getattr(contract, "price_precision", 4)
                 dist = abs(entry_px - sl_px)
                 is_long = side == OrderSide.BUY
                 tp_levels = [
-                    {"id": "tp1", "price": round(entry_px + (1.0 * dist) if is_long else entry_px - (1.0 * dist), 4), "size_pct": 20.0},
-                    {"id": "tp2", "price": round(entry_px + (1.5 * dist) if is_long else entry_px - (1.5 * dist), 4), "size_pct": 20.0},
-                    {"id": "tp3", "price": round(entry_px + (2.0 * dist) if is_long else entry_px - (2.0 * dist), 4), "size_pct": 20.0},
-                    {"id": "tp4", "price": round(entry_px + (2.5 * dist) if is_long else entry_px - (2.5 * dist), 4), "size_pct": 20.0},
-                    {"id": "tp5", "price": round(entry_px + (3.0 * dist) if is_long else entry_px - (3.0 * dist), 4), "size_pct": 20.0},
+                    {"id": "tp1", "price": round(entry_px + (1.0 * dist) if is_long else entry_px - (1.0 * dist), prec), "size_pct": 20.0},
+                    {"id": "tp2", "price": round(entry_px + (1.5 * dist) if is_long else entry_px - (1.5 * dist), prec), "size_pct": 20.0},
+                    {"id": "tp3", "price": round(entry_px + (2.0 * dist) if is_long else entry_px - (2.0 * dist), prec), "size_pct": 20.0},
+                    {"id": "tp4", "price": round(entry_px + (2.5 * dist) if is_long else entry_px - (2.5 * dist), prec), "size_pct": 20.0},
+                    {"id": "tp5", "price": round(entry_px + (3.0 * dist) if is_long else entry_px - (3.0 * dist), prec), "size_pct": 20.0},
                 ]
                 sl_levels = [
                     {"id": "sl1", "price": sl_px, "size_pct": 100.0}

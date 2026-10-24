@@ -268,19 +268,20 @@ class PropDAOOrderManager:
         to adhere strictly to exchange risk validation rules.
         """
         mark = current_mark or getattr(position, "mark", None)
+        prec = max(1, len(str(f"{tick_size:.8f}").rstrip("0").split(".")[1])) if "." in str(f"{tick_size:.8f}").rstrip("0") else 1
         if position.side == OrderSide.BUY:
-            be_price = round(position.entry + (buffer_ticks * tick_size), 4)
+            be_price = round(position.entry + (buffer_ticks * tick_size), prec)
             # Exchange rule: for LONG, SL must be <= mark
             if mark is not None and be_price > mark:
-                be_price = round(mark, 4)
+                be_price = round(mark, prec)
             # Ensure new stop is higher than current stop
             if position.sl_price and be_price <= position.sl_price:
                 return {}
         else:
-            be_price = round(position.entry - (buffer_ticks * tick_size), 4)
+            be_price = round(position.entry - (buffer_ticks * tick_size), prec)
             # Exchange rule: for SHORT, SL must be >= mark
             if mark is not None and be_price < mark:
-                be_price = round(mark, 4)
+                be_price = round(mark, prec)
             if position.sl_price and be_price >= position.sl_price:
                 return {}
 
